@@ -4,11 +4,13 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Sequence
 from urllib.parse import quote_plus, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+from ddgs import DDGS
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -108,6 +110,83 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
     return "\n".join(output)
 
 
+async def fetch_url_context(
+    client: httpx.AsyncClient,
+    url: str,
+    snippet: str,
+    context_chars: int = 200
+) -> str:
+    """
+    Fetch the webpage and extract surrounding context for the snippet.
+    
+    Args:
+        client: HTTP client for making requests
+        url: URL to fetch
+        snippet: Snippet text to find in the page
+        context_chars: Number of characters to include on each side of snippet
+        
+    Returns:
+        Extended snippet with surrounding context, or original snippet if fetch fails
+    """
+    try:
+        response = await client.get(url, timeout=10.0, follow_redirects=True)
+        if response.status_code != 200:
+            return snippet
+        
+        # Parse HTML to get text content
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # Get text content
+        text = soup.get_text()
+        
+        # Clean up whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Try to find the snippet or similar text in the page
+        snippet_clean = re.sub(r'\s+', ' ', snippet).strip().lower()
+        text_lower = text.lower()
+        
+        # Find position of snippet in text
+        pos = text_lower.find(snippet_clean[:50])  # Use first 50 chars for matching
+        
+        if pos != -1:
+            # Extract context around the snippet
+            start = max(0, pos - context_chars)
+            end = min(len(text), pos + len(snippet) + context_chars)
+            
+            context = text[start:end]
+            
+            # Add ellipsis if truncated
+            if start > 0:
+                context = "..." + context
+            if end < len(text):
+                context = context + "..."
+            
+            # Highlight the snippet portion
+            snippet_start = context.lower().find(snippet_clean[:30])
+            if snippet_start != -1:
+                snippet_end = snippet_start + len(snippet)
+                highlighted = (
+                    context[:snippet_start] +
+                    "**" + context[snippet_start:snippet_end] + "**" +
+                    context[snippet_end:]
+                )
+                return highlighted
+            
+            return context
+        
+        # If snippet not found, return original
+        return snippet
+        
+    except Exception as e:
+        logger.debug(f"Error fetching context from {url}: {str(e)}")
+        return snippet
+
+
 async def search_nvidia_domain(
     client: httpx.AsyncClient,
     domain: str,
@@ -115,16 +194,16 @@ async def search_nvidia_domain(
     max_results: int = 5
 ) -> list[dict[str, Any]]:
     """
-    Search a specific NVIDIA domain using DuckDuckGo HTML search.
+    Search a specific NVIDIA domain using ddgs package.
     
     Args:
-        client: HTTP client for making requests
+        client: HTTP client for making requests (used for context fetching)
         domain: Domain to search (e.g., "developer.nvidia.com")
         query: Search query
         max_results: Maximum number of results to return
         
     Returns:
-        List of search results with title, url, and snippet
+        List of search results with title, url, snippet, and enhanced context
     """
     results = []
     
@@ -132,65 +211,46 @@ async def search_nvidia_domain(
         # Clean domain for site: operator
         clean_domain = domain.replace('https://', '').replace('http://', '').rstrip('/')
         
-        # Use DuckDuckGo HTML search with site: operator for domain-specific search
+        # Use ddgs package with site: operator for domain-specific search
         search_query = f"site:{clean_domain} {query}"
-        ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(search_query)}"
         
-        # Add headers to mimic a browser request
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-        
-        response = await client.get(ddg_url, headers=headers, follow_redirects=True, timeout=30.0)
-        
-        if response.status_code == 200:
-            # Parse the HTML response using BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
+        # Perform search using ddgs
+        with DDGS() as ddgs:
+            search_results = ddgs.text(search_query, max_results=max_results)
             
-            # Find all result divs
-            result_divs = soup.find_all('div', class_='result')
-            
-            for i, result_div in enumerate(result_divs[:max_results]):
+            # Process each result and fetch enhanced context
+            for result in search_results:
                 try:
-                    # Extract title and URL
-                    title_link = result_div.find('a', class_='result__a')
-                    if not title_link:
+                    title = result.get('title', '')
+                    url = result.get('href', '')
+                    snippet = result.get('body', '')
+                    
+                    if not title or not url:
                         continue
                     
-                    title = title_link.get_text(strip=True)
-                    url = title_link.get('href', '')
+                    # Fetch enhanced context with highlighted snippet
+                    enhanced_snippet = await fetch_url_context(client, url, snippet, context_chars=200)
                     
-                    # Extract snippet
-                    snippet_div = result_div.find('a', class_='result__snippet')
-                    snippet = snippet_div.get_text(strip=True) if snippet_div else ""
+                    results.append({
+                        "title": title,
+                        "url": url,
+                        "snippet": enhanced_snippet,
+                        "domain": clean_domain
+                    })
                     
-                    if title and url:
-                        results.append({
-                            "title": title,
-                            "url": url,
-                            "snippet": snippet,
-                            "domain": clean_domain
-                        })
-                        
                 except Exception as e:
-                    logger.debug(f"Error parsing result item: {str(e)}")
+                    logger.debug(f"Error processing result item: {str(e)}")
                     continue
-            
-            # If no results found from parsing, add a fallback message
-            if not results:
-                results.append({
-                    "title": f"Search performed for '{query}' on {clean_domain}",
-                    "url": ddg_url,
-                    "snippet": f"No specific results found. Try searching directly on {domain}",
-                    "domain": clean_domain
-                })
-        else:
-            logger.warning(f"Search request to {domain} returned status {response.status_code}")
             
     except Exception as e:
         logger.error(f"Error searching {domain}: {str(e)}")
+        # Add fallback message if search completely fails
+        results.append({
+            "title": f"Search error for '{query}' on {clean_domain}",
+            "url": f"https://{clean_domain}",
+            "snippet": f"Search temporarily unavailable. Error: {str(e)}",
+            "domain": clean_domain
+        })
     
     return results
 

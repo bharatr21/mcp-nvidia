@@ -140,8 +140,10 @@ Search across NVIDIA domains for specific information. Results include citations
 - "Omniverse development tutorials"
 
 **Features:**
+- **Enhanced search using ddgs package** for reliable DuckDuckGo integration with domain filtering
+- **Context-aware snippets**: Automatically fetches surrounding text from source URLs and highlights the relevant snippet with `**bold**` formatting
 - Concurrent search across multiple domains for fast results
-- Formatted results with titles, URLs, snippets, and source domains
+- Formatted results with titles, URLs, enhanced snippets with context, and source domains
 - Dedicated citations section with numbered references for easy copying
 
 ### discover_nvidia_content
