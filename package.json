@@ -1,0 +1,41 @@
+{
+  "name": "@bharatr21/mcp-nvidia",
+  "version": "0.1.0",
+  "description": "MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA specific queries",
+  "type": "module",
+  "bin": {
+    "mcp-nvidia": "./bin/mcp-nvidia.js"
+  },
+  "scripts": {
+    "prepare": "node scripts/check-python.js"
+  },
+  "keywords": [
+    "mcp",
+    "nvidia",
+    "search",
+    "llm",
+    "model-context-protocol"
+  ],
+  "author": "Bharat Raghunathan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bharatr21/mcp-nvidia.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bharatr21/mcp-nvidia/issues"
+  },
+  "homepage": "https://github.com/bharatr21/mcp-nvidia#readme",
+  "files": [
+    "bin/",
+    "scripts/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {}
+}

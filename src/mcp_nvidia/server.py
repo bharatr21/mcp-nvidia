@@ -37,13 +37,14 @@ app = Server("mcp-nvidia")
 
 
 def format_search_results(results: list[dict[str, Any]], query: str) -> str:
-    """Format search results into a readable string."""
+    """Format search results into a readable string with citations."""
     if not results:
         return f"No results found for query: {query}"
     
     output = [f"Search results for: {query}\n"]
     output.append("=" * 60)
     
+    # Format main results
     for i, result in enumerate(results, 1):
         output.append(f"\n{i}. {result.get('title', 'Untitled')}")
         if url := result.get('url'):
@@ -51,7 +52,17 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
         if snippet := result.get('snippet'):
             output.append(f"   {snippet}")
         if domain := result.get('domain'):
-            output.append(f"   Domain: {domain}")
+            output.append(f"   Source: {domain}")
+    
+    # Add citations section for easy reference
+    output.append("\n" + "=" * 60)
+    output.append("\nCITATIONS:")
+    output.append("-" * 60)
+    for i, result in enumerate(results, 1):
+        if url := result.get('url'):
+            title = result.get('title', 'Untitled')
+            output.append(f"[{i}] {title}")
+            output.append(f"    {url}")
     
     return "\n".join(output)
 
@@ -182,6 +193,125 @@ async def search_all_domains(
     return all_results
 
 
+async def discover_content(
+    content_type: str,
+    topic: str,
+    max_results: int = 5
+) -> list[dict[str, Any]]:
+    """
+    Discover specific types of NVIDIA content (videos, courses, tutorials, etc.).
+    
+    Args:
+        content_type: Type of content to find (video, course, tutorial, webinar, blog)
+        topic: Topic or keyword to search for
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of content items with metadata
+    """
+    # Map content types to search strategies
+    content_strategies = {
+        "video": {
+            "query": f"{topic} video OR tutorial",
+            "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
+            "keywords": ["youtube", "video", "watch", "tutorial"]
+        },
+        "course": {
+            "query": f"{topic} course OR training OR certification",
+            "domains": ["https://developer.nvidia.com/"],
+            "keywords": ["course", "training", "dli", "certification", "learn"]
+        },
+        "tutorial": {
+            "query": f"{topic} tutorial OR guide OR how-to",
+            "domains": ["https://developer.nvidia.com/", "https://docs.nvidia.com/"],
+            "keywords": ["tutorial", "guide", "how-to", "getting started"]
+        },
+        "webinar": {
+            "query": f"{topic} webinar OR event OR session",
+            "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
+            "keywords": ["webinar", "event", "session", "livestream"]
+        },
+        "blog": {
+            "query": f"{topic}",
+            "domains": ["https://blogs.nvidia.com/"],
+            "keywords": ["blog", "article", "post"]
+        }
+    }
+    
+    strategy = content_strategies.get(content_type.lower(), {
+        "query": f"{topic} {content_type}",
+        "domains": DEFAULT_DOMAINS,
+        "keywords": []
+    })
+    
+    # Search using the strategy
+    results = await search_all_domains(
+        query=strategy["query"],
+        domains=strategy.get("domains"),
+        max_results_per_domain=max_results
+    )
+    
+    # Filter and rank results based on content type keywords
+    filtered_results = []
+    keywords = strategy.get("keywords", [])
+    
+    for result in results:
+        title = result.get("title", "").lower()
+        snippet = result.get("snippet", "").lower()
+        url = result.get("url", "").lower()
+        
+        # Calculate relevance score based on keyword matches
+        score = 0
+        for keyword in keywords:
+            if keyword in title:
+                score += 3
+            if keyword in snippet:
+                score += 2
+            if keyword in url:
+                score += 1
+        
+        result["relevance_score"] = score
+        filtered_results.append(result)
+    
+    # Sort by relevance score (highest first) and limit results
+    filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    
+    return filtered_results[:max_results]
+
+
+def format_content_results(results: list[dict[str, Any]], content_type: str, topic: str) -> str:
+    """Format content discovery results."""
+    if not results:
+        return f"No {content_type} content found for topic: {topic}"
+    
+    output = [f"Recommended {content_type.upper()} content for: {topic}\n"]
+    output.append("=" * 60)
+    
+    for i, result in enumerate(results, 1):
+        score = result.get("relevance_score", 0)
+        relevance = "⭐" * min(5, max(1, score // 2))  # 1-5 stars
+        
+        output.append(f"\n{i}. {result.get('title', 'Untitled')} {relevance}")
+        if url := result.get('url'):
+            output.append(f"   URL: {url}")
+        if snippet := result.get('snippet'):
+            output.append(f"   {snippet}")
+        if domain := result.get('domain'):
+            output.append(f"   Source: {domain}")
+    
+    # Add citations
+    output.append("\n" + "=" * 60)
+    output.append("\nRESOURCE LINKS:")
+    output.append("-" * 60)
+    for i, result in enumerate(results, 1):
+        if url := result.get('url'):
+            title = result.get('title', 'Untitled')
+            output.append(f"[{i}] {title}")
+            output.append(f"    {url}")
+    
+    return "\n".join(output)
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""
@@ -193,7 +323,8 @@ async def list_tools() -> list[Tool]:
                 "blogs.nvidia.com, nvidianews.nvidia.com, docs.nvidia.com, and "
                 "build.nvidia.com for NVIDIA-specific information. This tool helps "
                 "find relevant documentation, blog posts, news, and developer resources "
-                "related to NVIDIA technologies, products, and services."
+                "related to NVIDIA technologies, products, and services. Results include "
+                "citations with URLs for reference."
             ),
             inputSchema={
                 "type": "object",
@@ -218,6 +349,42 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["query"]
             }
+        ),
+        Tool(
+            name="discover_nvidia_content",
+            description=(
+                "Discover specific types of NVIDIA content such as videos, courses, tutorials, "
+                "webinars, or blog posts. This tool helps find educational and learning resources "
+                "from NVIDIA's various platforms. Returns ranked results with relevance scores "
+                "and direct links to the content."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content_type": {
+                        "type": "string",
+                        "enum": ["video", "course", "tutorial", "webinar", "blog"],
+                        "description": (
+                            "Type of content to discover: "
+                            "'video' for video tutorials and demonstrations, "
+                            "'course' for training courses and certifications (DLI), "
+                            "'tutorial' for step-by-step guides, "
+                            "'webinar' for webinars and live sessions, "
+                            "'blog' for blog posts and articles"
+                        )
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "The topic or technology to find content about (e.g., 'CUDA', 'Omniverse', 'AI')"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of content items to return (default: 5)",
+                        "default": 5
+                    }
+                },
+                "required": ["content_type", "topic"]
+            }
         )
     ]
 
@@ -225,32 +392,59 @@ async def list_tools() -> list[Tool]:
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
     """Handle tool calls."""
-    if name != "search_nvidia":
-        raise ValueError(f"Unknown tool: {name}")
-    
-    query = arguments.get("query")
-    if not query:
-        raise ValueError("Query parameter is required")
-    
-    domains = arguments.get("domains")
-    max_results_per_domain = arguments.get("max_results_per_domain", 3)
-    
-    logger.info(f"Searching NVIDIA domains for: {query}")
-    
-    results = await search_all_domains(
-        query=query,
-        domains=domains,
-        max_results_per_domain=max_results_per_domain
-    )
-    
-    formatted_results = format_search_results(results, query)
-    
-    return [
-        TextContent(
-            type="text",
-            text=formatted_results
+    if name == "search_nvidia":
+        query = arguments.get("query")
+        if not query:
+            raise ValueError("Query parameter is required")
+        
+        domains = arguments.get("domains")
+        max_results_per_domain = arguments.get("max_results_per_domain", 3)
+        
+        logger.info(f"Searching NVIDIA domains for: {query}")
+        
+        results = await search_all_domains(
+            query=query,
+            domains=domains,
+            max_results_per_domain=max_results_per_domain
         )
-    ]
+        
+        formatted_results = format_search_results(results, query)
+        
+        return [
+            TextContent(
+                type="text",
+                text=formatted_results
+            )
+        ]
+    
+    elif name == "discover_nvidia_content":
+        content_type = arguments.get("content_type")
+        topic = arguments.get("topic")
+        
+        if not content_type or not topic:
+            raise ValueError("Both content_type and topic parameters are required")
+        
+        max_results = arguments.get("max_results", 5)
+        
+        logger.info(f"Discovering {content_type} content for topic: {topic}")
+        
+        results = await discover_content(
+            content_type=content_type,
+            topic=topic,
+            max_results=max_results
+        )
+        
+        formatted_results = format_content_results(results, content_type, topic)
+        
+        return [
+            TextContent(
+                type="text",
+                text=formatted_results
+            )
+        ]
+    
+    else:
+        raise ValueError(f"Unknown tool: {name}")
 
 
 async def run():

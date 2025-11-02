@@ -1,8 +1,20 @@
 # Publishing Guide for mcp-nvidia
 
-This guide explains how to publish the mcp-nvidia package to PyPI so that users can install it via `pip install mcp-nvidia`.
+This guide explains how to publish the mcp-nvidia package to both PyPI (for `pip install`) and npm (for `npx` usage).
 
-## Prerequisites
+## Publishing to Both Registries
+
+The package is designed to be published to both PyPI and npm:
+- **PyPI**: For Python users and direct installation
+- **npm**: For easy use with MCP clients via `npx @bharatr21/mcp-nvidia`
+
+The npm package acts as a wrapper that executes the Python backend.
+
+---
+
+## Part 1: Publishing to PyPI
+
+### Prerequisites
 
 1. **PyPI Account**: Create accounts on both:
    - [Test PyPI](https://test.pypi.org/account/register/) - for testing
@@ -93,18 +105,68 @@ pip show mcp-nvidia
 mcp-nvidia
 ```
 
+---
+
+## Part 2: Publishing to npm
+
+### Prerequisites
+
+1. **npm Account**: Create an account at https://www.npmjs.com/signup
+2. **Login to npm**:
+   ```bash
+   npm login
+   ```
+
+### Publish to npm
+
+```bash
+# Ensure you're in the project root
+cd /path/to/mcp-nvidia
+
+# Publish to npm (first time, you may need to add --access public for scoped packages)
+npm publish --access public
+```
+
+### Test npm Package
+
+```bash
+# Test with npx
+npx @bharatr21/mcp-nvidia
+
+# Or install globally
+npm install -g @bharatr21/mcp-nvidia
+mcp-nvidia
+```
+
+### Update Claude Desktop Config for npm
+
+Users can now use the npm package directly:
+
+```json
+{
+  "mcpServers": {
+    "nvidia": {
+      "command": "npx",
+      "args": ["-y", "@bharatr21/mcp-nvidia"]
+    }
+  }
+}
+```
+
+---
+
 ## Version Management
 
 When releasing new versions:
 
-1. Update the version in `pyproject.toml`
+1. Update the version in **both** `pyproject.toml` and `package.json`
 2. Update the version in `src/mcp_nvidia/__init__.py`
 3. Create a git tag:
    ```bash
    git tag -a v0.1.0 -m "Release version 0.1.0"
    git push origin v0.1.0
    ```
-4. Build and publish following the steps above
+4. Build and publish to both PyPI and npm following the steps above
 
 ## Automated Publishing with GitHub Actions
 

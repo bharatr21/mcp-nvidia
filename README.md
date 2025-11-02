@@ -14,7 +14,28 @@ This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to
 
 ## Installation
 
-### Via pip (Recommended)
+### Via npx (Easiest - recommended for MCP clients)
+
+```bash
+npx @bharatr21/mcp-nvidia
+```
+
+Or add to your Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "nvidia": {
+      "command": "npx",
+      "args": ["-y", "@bharatr21/mcp-nvidia"]
+    }
+  }
+}
+```
+
+**Note:** This requires Python 3.10+ to be installed on your system. The package will automatically use the Python backend.
+
+### Via pip
 
 ```bash
 pip install mcp-nvidia
@@ -102,7 +123,7 @@ If you installed from source, you may need to use the full path to the Python ex
 
 ### search_nvidia
 
-Search across NVIDIA domains for specific information.
+Search across NVIDIA domains for specific information. Results include citations with URLs for easy reference.
 
 **Parameters:**
 - `query` (required): The search query to find information across NVIDIA domains
@@ -115,6 +136,36 @@ Search across NVIDIA domains for specific information.
 - "TensorRT optimization techniques"
 - "Latest AI announcements"
 - "Omniverse development tutorials"
+
+**Features:**
+- Concurrent search across multiple domains for fast results
+- Formatted results with titles, URLs, snippets, and source domains
+- Dedicated citations section with numbered references for easy copying
+
+### discover_nvidia_content
+
+Discover specific types of NVIDIA educational and learning content such as videos, courses, tutorials, webinars, or blog posts.
+
+**Parameters:**
+- `content_type` (required): Type of content to find - one of:
+  - `video`: Video tutorials and demonstrations
+  - `course`: Training courses and certifications (NVIDIA DLI)
+  - `tutorial`: Step-by-step guides and how-tos
+  - `webinar`: Webinars and live sessions
+  - `blog`: Blog posts and articles
+- `topic` (required): The topic or technology to find content about (e.g., "CUDA", "Omniverse", "AI")
+- `max_results` (optional): Maximum number of content items to return (default: 5)
+
+**Example queries:**
+- Find video tutorials: `discover_nvidia_content(content_type="video", topic="CUDA programming")`
+- Find training courses: `discover_nvidia_content(content_type="course", topic="Deep Learning")`
+- Find webinars: `discover_nvidia_content(content_type="webinar", topic="AI in Healthcare")`
+
+**Features:**
+- Content-specific search strategies optimized for each type
+- Relevance scoring with star ratings (⭐) to highlight best matches
+- Direct links to videos, courses, tutorials, and other resources
+- Resource links section for easy access to all discovered content
 
 ## Development
 
