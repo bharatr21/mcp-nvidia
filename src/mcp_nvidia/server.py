@@ -7,6 +7,7 @@ from typing import Any, Sequence
 from urllib.parse import quote_plus, urljoin
 
 import httpx
+from bs4 import BeautifulSoup
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DOMAINS = [
     "https://developer.nvidia.com/",
     "https://blogs.nvidia.com/",
-    "http://nvidianews.nvidia.com/",
+    "https://nvidianews.nvidia.com/",
     "https://docs.nvidia.com/",
     "https://build.nvidia.com/",
 ]
@@ -87,7 +88,6 @@ async def search_nvidia_domain(
         
         if response.status_code == 200:
             # Parse the HTML response using BeautifulSoup
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Find all result divs
