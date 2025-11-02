@@ -55,7 +55,7 @@ async def search_nvidia_domain(
     max_results: int = 5
 ) -> list[dict[str, Any]]:
     """
-    Search a specific NVIDIA domain using Google Custom Search.
+    Search a specific NVIDIA domain using DuckDuckGo HTML search.
     
     Args:
         client: HTTP client for making requests
@@ -69,26 +69,64 @@ async def search_nvidia_domain(
     results = []
     
     try:
-        # Use Google search with site: operator for domain-specific search
-        search_query = f"site:{domain.replace('https://', '').replace('http://', '').rstrip('/')} {query}"
-        google_search_url = f"https://www.google.com/search?q={quote_plus(search_query)}&num={max_results}"
+        # Clean domain for site: operator
+        clean_domain = domain.replace('https://', '').replace('http://', '').rstrip('/')
+        
+        # Use DuckDuckGo HTML search with site: operator for domain-specific search
+        search_query = f"site:{clean_domain} {query}"
+        ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(search_query)}"
         
         # Add headers to mimic a browser request
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
         }
         
-        response = await client.get(google_search_url, headers=headers, follow_redirects=True, timeout=30.0)
+        response = await client.get(ddg_url, headers=headers, follow_redirects=True, timeout=30.0)
         
         if response.status_code == 200:
-            # Simple parsing - in production, you might want to use Beautiful Soup or similar
-            # For now, we'll construct a basic result indicating the search was performed
-            results.append({
-                "title": f"Search results for '{query}' on {domain}",
-                "url": google_search_url,
-                "snippet": f"Search performed on {domain}. Visit the link for detailed results.",
-                "domain": domain
-            })
+            # Parse the HTML response using BeautifulSoup
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Find all result divs
+            result_divs = soup.find_all('div', class_='result')
+            
+            for i, result_div in enumerate(result_divs[:max_results]):
+                try:
+                    # Extract title and URL
+                    title_link = result_div.find('a', class_='result__a')
+                    if not title_link:
+                        continue
+                    
+                    title = title_link.get_text(strip=True)
+                    url = title_link.get('href', '')
+                    
+                    # Extract snippet
+                    snippet_div = result_div.find('a', class_='result__snippet')
+                    snippet = snippet_div.get_text(strip=True) if snippet_div else ""
+                    
+                    if title and url:
+                        results.append({
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet,
+                            "domain": clean_domain
+                        })
+                        
+                except Exception as e:
+                    logger.debug(f"Error parsing result item: {str(e)}")
+                    continue
+            
+            # If no results found from parsing, add a fallback message
+            if not results:
+                results.append({
+                    "title": f"Search performed for '{query}' on {clean_domain}",
+                    "url": ddg_url,
+                    "snippet": f"No specific results found. Try searching directly on {domain}",
+                    "domain": clean_domain
+                })
         else:
             logger.warning(f"Search request to {domain} returned status {response.status_code}")
             
