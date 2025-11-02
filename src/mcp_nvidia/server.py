@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Sequence
 from urllib.parse import quote_plus, urljoin
 
@@ -13,7 +14,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+log_level = os.getenv("MCP_NVIDIA_LOG_LEVEL", "INFO")
+logging.basicConfig(level=getattr(logging, log_level.upper()))
 logger = logging.getLogger(__name__)
 
 # Default NVIDIA domains to search
@@ -24,6 +26,11 @@ DEFAULT_DOMAINS = [
     "https://docs.nvidia.com/",
     "https://build.nvidia.com/",
 ]
+
+# Allow override via environment variable (comma-separated list)
+if custom_domains := os.getenv("MCP_NVIDIA_DOMAINS"):
+    DEFAULT_DOMAINS = [d.strip() for d in custom_domains.split(",") if d.strip()]
+    logger.info(f"Using custom domains from environment: {DEFAULT_DOMAINS}")
 
 # Create server instance
 app = Server("mcp-nvidia")

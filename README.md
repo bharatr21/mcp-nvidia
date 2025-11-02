@@ -38,6 +38,20 @@ The MCP server can be run directly from the command line:
 mcp-nvidia
 ```
 
+### Configuration
+
+The server can be configured using environment variables:
+
+- `MCP_NVIDIA_DOMAINS`: Comma-separated list of custom NVIDIA domains to search (overrides defaults)
+- `MCP_NVIDIA_LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
+Example:
+```bash
+export MCP_NVIDIA_DOMAINS="https://developer.nvidia.com/,https://docs.nvidia.com/"
+export MCP_NVIDIA_LOG_LEVEL="DEBUG"
+mcp-nvidia
+```
+
 ### Configuring with Claude Desktop
 
 Add the following to your Claude Desktop configuration file:
@@ -50,6 +64,22 @@ Add the following to your Claude Desktop configuration file:
   "mcpServers": {
     "nvidia": {
       "command": "mcp-nvidia"
+    }
+  }
+}
+```
+
+With custom configuration (environment variables):
+
+```json
+{
+  "mcpServers": {
+    "nvidia": {
+      "command": "mcp-nvidia",
+      "env": {
+        "MCP_NVIDIA_LOG_LEVEL": "DEBUG",
+        "MCP_NVIDIA_DOMAINS": "https://developer.nvidia.com/,https://docs.nvidia.com/"
+      }
     }
   }
 }
