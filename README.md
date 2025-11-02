@@ -64,6 +64,8 @@ mcp-nvidia
 The server can be configured using environment variables:
 
 - `MCP_NVIDIA_DOMAINS`: Comma-separated list of custom NVIDIA domains to search (overrides defaults)
+  - **Security**: Only nvidia.com domains and subdomains are allowed. Invalid domains are automatically filtered out.
+  - Example: `"https://developer.nvidia.com/,https://docs.nvidia.com/"`
 - `MCP_NVIDIA_LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 Example:
@@ -163,7 +165,9 @@ Discover specific types of NVIDIA educational and learning content such as video
 
 **Features:**
 - Content-specific search strategies optimized for each type
-- Relevance scoring with star ratings (⭐) to highlight best matches
+- **Relevance scoring on 0-100 scale** with star ratings (⭐) to highlight best matches
+  - Score displayed as "Score: X/100" for transparency
+  - Stars: 0-19 = ⭐, 20-39 = ⭐⭐, 40-59 = ⭐⭐⭐, 60-79 = ⭐⭐⭐⭐, 80-100 = ⭐⭐⭐⭐⭐
 - Direct links to videos, courses, tutorials, and other resources
 - Resource links section for easy access to all discovered content
 

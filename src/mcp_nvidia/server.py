@@ -27,10 +27,51 @@ DEFAULT_DOMAINS = [
     "https://build.nvidia.com/",
 ]
 
+
+def validate_nvidia_domain(domain: str) -> bool:
+    """
+    Validate that a domain is a valid NVIDIA domain or subdomain.
+    
+    Args:
+        domain: URL string to validate
+        
+    Returns:
+        True if domain is nvidia.com or a subdomain, False otherwise
+    """
+    from urllib.parse import urlparse
+    
+    try:
+        parsed = urlparse(domain)
+        hostname = parsed.netloc or parsed.path.split('/')[0]
+        hostname = hostname.lower()
+        
+        # Check if it's nvidia.com or a subdomain of nvidia.com
+        if hostname == "nvidia.com" or hostname.endswith(".nvidia.com"):
+            return True
+        
+        logger.warning(f"Domain validation failed for: {domain} (hostname: {hostname})")
+        return False
+    except Exception as e:
+        logger.error(f"Error validating domain {domain}: {e}")
+        return False
+
+
 # Allow override via environment variable (comma-separated list)
 if custom_domains := os.getenv("MCP_NVIDIA_DOMAINS"):
-    DEFAULT_DOMAINS = [d.strip() for d in custom_domains.split(",") if d.strip()]
-    logger.info(f"Using custom domains from environment: {DEFAULT_DOMAINS}")
+    raw_domains = [d.strip() for d in custom_domains.split(",") if d.strip()]
+    validated_domains = []
+    
+    for domain in raw_domains:
+        if validate_nvidia_domain(domain):
+            validated_domains.append(domain)
+        else:
+            logger.warning(f"Skipping invalid domain (not nvidia.com): {domain}")
+    
+    if validated_domains:
+        DEFAULT_DOMAINS = validated_domains
+        logger.info(f"Using custom domains from environment: {DEFAULT_DOMAINS}")
+    else:
+        logger.warning("No valid NVIDIA domains found in MCP_NVIDIA_DOMAINS. Using defaults.")
 
 # Create server instance
 app = Server("mcp-nvidia")
@@ -255,22 +296,31 @@ async def discover_content(
     filtered_results = []
     keywords = strategy.get("keywords", [])
     
+    # Calculate max possible score for normalization
+    max_possible_score = len(keywords) * 6  # 3 for title + 2 for snippet + 1 for URL
+    
     for result in results:
         title = result.get("title", "").lower()
         snippet = result.get("snippet", "").lower()
         url = result.get("url", "").lower()
         
-        # Calculate relevance score based on keyword matches
-        score = 0
+        # Calculate raw relevance score based on keyword matches
+        raw_score = 0
         for keyword in keywords:
             if keyword in title:
-                score += 3
+                raw_score += 3
             if keyword in snippet:
-                score += 2
+                raw_score += 2
             if keyword in url:
-                score += 1
+                raw_score += 1
         
-        result["relevance_score"] = score
+        # Normalize to 0-100 scale
+        if max_possible_score > 0:
+            normalized_score = int((raw_score / max_possible_score) * 100)
+        else:
+            normalized_score = 0
+        
+        result["relevance_score"] = normalized_score
         filtered_results.append(result)
     
     # Sort by relevance score (highest first) and limit results
@@ -289,9 +339,12 @@ def format_content_results(results: list[dict[str, Any]], content_type: str, top
     
     for i, result in enumerate(results, 1):
         score = result.get("relevance_score", 0)
-        relevance = "⭐" * min(5, max(1, score // 2))  # 1-5 stars
+        # Convert 0-100 score to 1-5 stars
+        # 0-19: 1 star, 20-39: 2 stars, 40-59: 3 stars, 60-79: 4 stars, 80-100: 5 stars
+        stars = max(1, min(5, (score // 20) + 1))
+        relevance = "⭐" * stars
         
-        output.append(f"\n{i}. {result.get('title', 'Untitled')} {relevance}")
+        output.append(f"\n{i}. {result.get('title', 'Untitled')} {relevance} (Score: {score}/100)")
         if url := result.get('url'):
             output.append(f"   URL: {url}")
         if snippet := result.get('snippet'):

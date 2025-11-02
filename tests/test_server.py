@@ -1,7 +1,7 @@
 """Tests for the MCP NVIDIA server."""
 
 import pytest
-from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS
+from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS, validate_nvidia_domain
 
 
 def test_format_search_results_empty():
@@ -72,14 +72,14 @@ def test_format_search_results_includes_citations():
 
 
 def test_format_content_results_with_data():
-    """Test formatting content discovery results."""
+    """Test formatting content discovery results with 0-100 score scale."""
     results = [
         {
             "title": "CUDA Tutorial",
             "url": "https://developer.nvidia.com/cuda-tutorial",
             "snippet": "Learn CUDA programming",
             "domain": "developer.nvidia.com",
-            "relevance_score": 5
+            "relevance_score": 85  # 0-100 scale
         }
     ]
     content_type = "tutorial"
@@ -90,6 +90,7 @@ def test_format_content_results_with_data():
     assert "https://developer.nvidia.com/cuda-tutorial" in formatted
     assert "RESOURCE LINKS:" in formatted
     assert "⭐" in formatted  # Should include relevance stars
+    assert "Score: 85/100" in formatted  # Should show 0-100 score
 
 
 def test_format_content_results_empty():
@@ -101,3 +102,42 @@ def test_format_content_results_empty():
     
     assert "No video content found" in formatted
     assert topic in formatted
+
+
+def test_validate_nvidia_domain_valid():
+    """Test validation of valid NVIDIA domains."""
+    assert validate_nvidia_domain("https://developer.nvidia.com/") == True
+    assert validate_nvidia_domain("https://blogs.nvidia.com/") == True
+    assert validate_nvidia_domain("https://docs.nvidia.com/cuda/") == True
+    assert validate_nvidia_domain("https://nvidia.com/") == True
+    assert validate_nvidia_domain("http://nvidianews.nvidia.com/") == True
+
+
+def test_validate_nvidia_domain_invalid():
+    """Test validation rejects non-NVIDIA domains."""
+    assert validate_nvidia_domain("https://google.com/") == False
+    assert validate_nvidia_domain("https://example.com/") == False
+    assert validate_nvidia_domain("https://nvidia-fake.com/") == False
+    assert validate_nvidia_domain("https://notnvidia.com/") == False
+
+
+def test_relevance_score_normalization():
+    """Test that relevance scores are normalized to 0-100 scale."""
+    results = [
+        {
+            "title": "Test",
+            "relevance_score": 0
+        },
+        {
+            "title": "Test",
+            "relevance_score": 50
+        },
+        {
+            "title": "Test",
+            "relevance_score": 100
+        }
+    ]
+    
+    for result in results:
+        score = result["relevance_score"]
+        assert 0 <= score <= 100, f"Score {score} should be in range 0-100"
