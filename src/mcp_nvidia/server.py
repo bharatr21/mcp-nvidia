@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from typing import Any, Sequence
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -39,9 +39,7 @@ def validate_nvidia_domain(domain: str) -> bool:
         
     Returns:
         True if domain is nvidia.com or a subdomain, False otherwise
-    """
-    from urllib.parse import urlparse
-    
+    """    
     try:
         parsed = urlparse(domain)
         hostname = parsed.netloc or parsed.path.split('/')[0]
@@ -262,7 +260,7 @@ async def search_nvidia_domain(
                 continue
 
     except Exception as e:
-        logger.error(f"Error searching {domain}: {str(e)}")
+        logger.exception(f"Error searching {domain}: {str(e)}")
         # Add fallback message if search completely fails
         results.append({
             "title": f"Search error for '{query}' on {clean_domain}",

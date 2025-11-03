@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const { spawnSync } = require('child_process');
 
 // Check if uv is available, otherwise fall back to python -m
 function findPythonCommand() {
@@ -34,8 +31,10 @@ function findPython() {
   const pythonCmds = ['python3', 'python'];
   for (const cmd of pythonCmds) {
     try {
-      const check = spawn(cmd, ['--version'], { stdio: 'ignore' });
-      if (check) return [cmd, '-m', 'mcp_nvidia'];
+      const result = spawnSync(cmd, ['--version'], { stdio: 'ignore' });
+      if (result.error === undefined && result.status === 0) {
+        return [cmd, '-m', 'mcp_nvidia'];
+      }
     } catch {}
   }
   return ['python3', '-m', 'mcp_nvidia']; // default fallback
