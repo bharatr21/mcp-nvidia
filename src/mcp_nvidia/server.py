@@ -87,7 +87,12 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
     
     # Format main results
     for i, result in enumerate(results, 1):
-        output.append(f"\n{i}. {result.get('title', 'Untitled')}")
+        score = result.get("relevance_score", 0)
+        # Convert 0-100 score to 1-5 stars
+        stars = max(1, min(5, (score // 20) + 1))
+        relevance = "⭐" * stars
+        
+        output.append(f"\n{i}. {result.get('title', 'Untitled')} {relevance} (Score: {score}/100)")
         if url := result.get('url'):
             output.append(f"   URL: {url}")
         if snippet := result.get('snippet'):
@@ -272,10 +277,51 @@ async def search_nvidia_domain(
     return results
 
 
+def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
+    """
+    Calculate relevance score for a search result based on query term matches.
+    
+    Args:
+        result: Search result dictionary
+        query: Search query string
+        
+    Returns:
+        Relevance score from 0-100
+    """
+    title = result.get("title", "").lower()
+    snippet = result.get("snippet", "").lower()
+    url = result.get("url", "").lower()
+    
+    # Split query into terms
+    query_terms = query.lower().split()
+    
+    if not query_terms:
+        return 0
+    
+    # Calculate raw score based on term matches
+    raw_score = 0
+    max_score_per_term = 6  # 3 for title + 2 for snippet + 1 for URL
+    
+    for term in query_terms:
+        if term in title:
+            raw_score += 3
+        if term in snippet:
+            raw_score += 2
+        if term in url:
+            raw_score += 1
+    
+    # Normalize to 0-100 scale
+    max_possible_score = len(query_terms) * max_score_per_term
+    normalized_score = int((raw_score / max_possible_score) * 100) if max_possible_score > 0 else 0
+    
+    return normalized_score
+
+
 async def search_all_domains(
     query: str,
     domains: list[str] | None = None,
-    max_results_per_domain: int = 3
+    max_results_per_domain: int = 3,
+    min_relevance_score: int = 33
 ) -> list[dict[str, Any]]:
     """
     Search across all NVIDIA domains.
@@ -284,9 +330,10 @@ async def search_all_domains(
         query: Search query
         domains: List of domains to search (uses DEFAULT_DOMAINS if None)
         max_results_per_domain: Maximum results per domain
+        min_relevance_score: Minimum relevance score threshold (0-100, default 33)
         
     Returns:
-        Aggregated list of search results from all domains
+        Aggregated list of search results from all domains, filtered by relevance
     """
     if domains is None:
         domains = DEFAULT_DOMAINS
@@ -308,7 +355,17 @@ async def search_all_domains(
                 continue
             all_results.extend(results)
     
-    return all_results
+    # Calculate relevance scores for all results
+    for result in all_results:
+        result["relevance_score"] = calculate_search_relevance(result, query)
+    
+    # Filter by minimum relevance score
+    filtered_results = [r for r in all_results if r.get("relevance_score", 0) >= min_relevance_score]
+    
+    # Sort by relevance score (highest first)
+    filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    
+    return filtered_results
 
 
 async def discover_content(
@@ -475,6 +532,13 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Maximum number of results to return per domain (default: 3)",
                         "default": 3
+                    },
+                    "min_relevance_score": {
+                        "type": "integer",
+                        "description": "Minimum relevance score threshold (0-100) to filter results (default: 33)",
+                        "default": 33,
+                        "minimum": 0,
+                        "maximum": 100
                     }
                 },
                 "required": ["query"]
@@ -562,12 +626,15 @@ async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
 
             logger.info(f"Validated {len(validated_domains)} caller-supplied domains")
 
+        min_relevance_score = arguments.get("min_relevance_score", 33)
+
         logger.info(f"Searching NVIDIA domains for: {query}")
 
         results = await search_all_domains(
             query=query,
             domains=validated_domains,
-            max_results_per_domain=max_results_per_domain
+            max_results_per_domain=max_results_per_domain,
+            min_relevance_score=min_relevance_score
         )
 
         formatted_results = format_search_results(results, query)

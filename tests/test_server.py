@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, patch
-from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS, validate_nvidia_domain, call_tool
+from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS, validate_nvidia_domain, call_tool, calculate_search_relevance
 
 
 def test_format_search_results_empty():
@@ -210,3 +210,74 @@ async def test_call_tool_rejects_empty_validated_domains():
                 "domains": ["https://google.com/", "https://example.com/"]
             }
         )
+
+
+def test_calculate_search_relevance():
+    """Test search relevance score calculation."""
+    result = {
+        "title": "CUDA Programming Guide",
+        "snippet": "Learn CUDA programming for GPU acceleration",
+        "url": "https://developer.nvidia.com/cuda-programming"
+    }
+    query = "CUDA programming"
+    
+    score = calculate_search_relevance(result, query)
+    
+    # Should have high relevance since both terms appear in title, snippet, and url
+    assert score > 50
+    assert 0 <= score <= 100
+
+
+def test_format_search_results_with_relevance_score():
+    """Test that search results display relevance scores."""
+    results = [
+        {
+            "title": "Test Result",
+            "url": "https://developer.nvidia.com/test",
+            "snippet": "Test snippet",
+            "domain": "developer.nvidia.com",
+            "relevance_score": 75
+        }
+    ]
+    query = "test"
+    formatted = format_search_results(results, query)
+    
+    assert "Test Result" in formatted
+    assert "Score: 75/100" in formatted
+    assert "⭐" in formatted  # Should have star ratings
+
+
+@pytest.mark.asyncio
+async def test_search_filters_by_min_relevance_score():
+    """Test that search_all_domains filters by minimum relevance score."""
+    from mcp_nvidia.server import search_all_domains
+    
+    mock_results = [
+        {
+            "title": "High relevance result",
+            "url": "https://developer.nvidia.com/high",
+            "snippet": "CUDA programming guide",
+            "domain": "developer.nvidia.com"
+        },
+        {
+            "title": "Low relevance result",
+            "url": "https://developer.nvidia.com/low",
+            "snippet": "Some other content",
+            "domain": "developer.nvidia.com"
+        }
+    ]
+    
+    with patch('mcp_nvidia.server.search_nvidia_domain', new=AsyncMock(return_value=mock_results)):
+        # Test with default threshold (33)
+        results = await search_all_domains(
+            query="CUDA programming",
+            max_results_per_domain=2
+        )
+        
+        # Should have at least one result (the high relevance one)
+        assert len(results) >= 1
+        
+        # All results should have relevance scores
+        for result in results:
+            assert "relevance_score" in result
+            assert result["relevance_score"] >= 33

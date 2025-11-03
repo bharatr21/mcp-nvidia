@@ -131,6 +131,7 @@ Search across NVIDIA domains for specific information. Results include citations
 - `query` (required): The search query to find information across NVIDIA domains
 - `domains` (optional): List of specific NVIDIA domains to search. If not provided, searches all default domains
 - `max_results_per_domain` (optional): Maximum number of results to return per domain (default: 3)
+- `min_relevance_score` (optional): Minimum relevance score threshold (0-100) to filter results (default: 33)
 
 **Example queries:**
 - "CUDA programming best practices"
@@ -142,6 +143,11 @@ Search across NVIDIA domains for specific information. Results include citations
 **Features:**
 - **Enhanced search using ddgs package** for reliable DuckDuckGo integration with domain filtering
 - **Context-aware snippets**: Automatically fetches surrounding text from source URLs and highlights the relevant snippet with `**bold**` formatting
+- **Relevance scoring (0-100 scale)**: Each result includes a relevance score based on query term matches in title, snippet, and URL
+  - Results are sorted by relevance score (highest first)
+  - Results below the threshold are automatically filtered out
+  - Score displayed as "Score: X/100" with star ratings (⭐)
+  - Star conversion: 0-19=⭐, 20-39=⭐⭐, 40-59=⭐⭐⭐, 60-79=⭐⭐⭐⭐, 80-100=⭐⭐⭐⭐⭐
 - Concurrent search across multiple domains for fast results
 - Formatted results with titles, URLs, enhanced snippets with context, and source domains
 - Dedicated citations section with numbered references for easy copying
