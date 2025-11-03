@@ -541,7 +541,7 @@ async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
 
             for domain in domains:
                 if not isinstance(domain, str):
-                    raise ValueError(f"Invalid domain type: {type(domain).__name__}. Expected string.")
+                    raise TypeError(f"Invalid domain type: {type(domain).__name__}. Expected string.")
 
                 if validate_nvidia_domain(domain):
                     validated_domains.append(domain)
