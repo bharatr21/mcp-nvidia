@@ -52,7 +52,7 @@ def validate_nvidia_domain(domain: str) -> bool:
         logger.warning(f"Domain validation failed for: {domain} (hostname: {hostname})")
         return False
     except Exception as e:
-        logger.error(f"Error validating domain {domain}: {e}")
+        logger.exception(f"Error validating domain {domain}: {e}")
         return False
 
 

@@ -25,7 +25,7 @@ jobs:
       run: pip install uv
     
     - name: Cache uv
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/uv
         key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
