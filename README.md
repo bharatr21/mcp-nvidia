@@ -1,6 +1,6 @@
 # mcp-nvidia
 
-MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA specific queries.
+MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA-specific queries.
 
 ## Overview
 
@@ -115,7 +115,7 @@ If you installed from source, you may need to use the full path to the Python ex
   "mcpServers": {
     "nvidia": {
       "command": "/path/to/python",
-      "args": ["-m", "mcp_nvidia.server"]
+      "args": ["-m", "mcp_nvidia"]
     }
   }
 }

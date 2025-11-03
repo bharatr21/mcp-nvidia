@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Bharat Raghunathan", email = "bharatr21@example.com"}
+    {name = "Bharat Raghunathan"}
 ]
 keywords = ["mcp", "nvidia", "search", "llm"]
 classifiers = [
@@ -23,10 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "mcp>=0.9.0",
-    "httpx>=0.27.0",
-    "beautifulsoup4>=4.12.0",
-    "ddgs>=0.1.0",
+    "mcp>=1.20.0",
+   "httpx>=0.28.0",
+   "beautifulsoup4>=4.14.0",
+   "ddgs>=9.0.0",
 ]
 
 [project.optional-dependencies]

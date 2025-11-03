@@ -187,6 +187,26 @@ async def fetch_url_context(
         return snippet
 
 
+def _fetch_ddgs_results(search_query: str, max_results: int) -> list[dict[str, Any]]:
+    """
+    Synchronous helper to fetch DuckDuckGo search results.
+
+    This function is designed to run in a worker thread to avoid blocking
+    the async event loop.
+
+    Args:
+        search_query: The search query with site: operator
+        max_results: Maximum number of results to return
+
+    Returns:
+        List of raw search results from DDGS
+    """
+    search_results = []
+    with DDGS() as ddgs:
+        search_results = list(ddgs.text(search_query, max_results=max_results))
+    return search_results
+
+
 async def search_nvidia_domain(
     client: httpx.AsyncClient,
     domain: str,
@@ -195,53 +215,52 @@ async def search_nvidia_domain(
 ) -> list[dict[str, Any]]:
     """
     Search a specific NVIDIA domain using ddgs package.
-    
+
     Args:
         client: HTTP client for making requests (used for context fetching)
         domain: Domain to search (e.g., "developer.nvidia.com")
         query: Search query
         max_results: Maximum number of results to return
-        
+
     Returns:
         List of search results with title, url, snippet, and enhanced context
     """
     results = []
-    
+
     try:
         # Clean domain for site: operator
         clean_domain = domain.replace('https://', '').replace('http://', '').rstrip('/')
-        
+
         # Use ddgs package with site: operator for domain-specific search
         search_query = f"site:{clean_domain} {query}"
-        
-        # Perform search using ddgs
-        with DDGS() as ddgs:
-            search_results = ddgs.text(search_query, max_results=max_results)
-            
-            # Process each result and fetch enhanced context
-            for result in search_results:
-                try:
-                    title = result.get('title', '')
-                    url = result.get('href', '')
-                    snippet = result.get('body', '')
-                    
-                    if not title or not url:
-                        continue
-                    
-                    # Fetch enhanced context with highlighted snippet
-                    enhanced_snippet = await fetch_url_context(client, url, snippet, context_chars=200)
-                    
-                    results.append({
-                        "title": title,
-                        "url": url,
-                        "snippet": enhanced_snippet,
-                        "domain": clean_domain
-                    })
-                    
-                except Exception as e:
-                    logger.debug(f"Error processing result item: {str(e)}")
+
+        # Perform search using ddgs in a worker thread to avoid blocking the event loop
+        search_results = await asyncio.to_thread(_fetch_ddgs_results, search_query, max_results)
+
+        # Process each result and fetch enhanced context
+        for result in search_results:
+            try:
+                title = result.get('title', '')
+                url = result.get('href', '')
+                snippet = result.get('body', '')
+
+                if not title or not url:
                     continue
-            
+
+                # Fetch enhanced context with highlighted snippet
+                enhanced_snippet = await fetch_url_context(client, url, snippet, context_chars=200)
+
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": enhanced_snippet,
+                    "domain": clean_domain
+                })
+
+            except Exception as e:
+                logger.debug(f"Error processing result item: {str(e)}")
+                continue
+
     except Exception as e:
         logger.error(f"Error searching {domain}: {str(e)}")
         # Add fallback message if search completely fails
@@ -251,7 +270,7 @@ async def search_nvidia_domain(
             "snippet": f"Search temporarily unavailable. Error: {str(e)}",
             "domain": clean_domain
         })
-    
+
     return results
 
 
@@ -509,20 +528,52 @@ async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
         query = arguments.get("query")
         if not query:
             raise ValueError("Query parameter is required")
-        
+
         domains = arguments.get("domains")
         max_results_per_domain = arguments.get("max_results_per_domain", 3)
-        
+
+        # Validate caller-supplied domains
+        validated_domains = None
+        if domains is not None:
+            if not isinstance(domains, list):
+                raise ValueError("domains must be a list of strings")
+
+            invalid_domains = []
+            validated_domains = []
+
+            for domain in domains:
+                if not isinstance(domain, str):
+                    raise ValueError(f"Invalid domain type: {type(domain).__name__}. Expected string.")
+
+                if validate_nvidia_domain(domain):
+                    validated_domains.append(domain)
+                else:
+                    invalid_domains.append(domain)
+
+            # Reject request if any invalid domain is present
+            if invalid_domains:
+                error_msg = (
+                    f"Invalid domains detected. Only nvidia.com domains and subdomains are allowed. "
+                    f"Invalid domains: {', '.join(invalid_domains)}"
+                )
+                logger.warning(error_msg)
+                raise ValueError(error_msg)
+
+            if not validated_domains:
+                raise ValueError("No valid NVIDIA domains provided")
+
+            logger.info(f"Validated {len(validated_domains)} caller-supplied domains")
+
         logger.info(f"Searching NVIDIA domains for: {query}")
-        
+
         results = await search_all_domains(
             query=query,
-            domains=domains,
+            domains=validated_domains,
             max_results_per_domain=max_results_per_domain
         )
-        
+
         formatted_results = format_search_results(results, query)
-        
+
         return [
             TextContent(
                 type="text",

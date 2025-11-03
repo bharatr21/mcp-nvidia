@@ -14,7 +14,7 @@ function findPythonCommand() {
     
     uvCheck.on('error', () => {
       // uv not available, use python
-      resolve(['python3', '-m', 'mcp_nvidia.server']);
+      resolve(findPython());
     });
     
     uvCheck.on('close', (code) => {
@@ -23,10 +23,22 @@ function findPythonCommand() {
         resolve(['uvx', 'mcp-nvidia']);
       } else {
         // uv not available, use python
-        resolve(['python3', '-m', 'mcp_nvidia.server']);
+        resolve(findPython());
       }
     });
   });
+}
+
+function findPython() {
+  // Try python3 first, then python as fallback
+  const pythonCmds = ['python3', 'python'];
+  for (const cmd of pythonCmds) {
+    try {
+      const check = spawn(cmd, ['--version'], { stdio: 'ignore' });
+      if (check) return [cmd, '-m', 'mcp_nvidia'];
+    } catch {}
+  }
+  return ['python3', '-m', 'mcp_nvidia']; // default fallback
 }
 
 async function main() {

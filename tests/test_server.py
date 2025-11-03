@@ -1,7 +1,8 @@
 """Tests for the MCP NVIDIA server."""
 
 import pytest
-from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS, validate_nvidia_domain
+from unittest.mock import AsyncMock, patch
+from mcp_nvidia.server import format_search_results, format_content_results, DEFAULT_DOMAINS, validate_nvidia_domain, call_tool
 
 
 def test_format_search_results_empty():
@@ -106,19 +107,19 @@ def test_format_content_results_empty():
 
 def test_validate_nvidia_domain_valid():
     """Test validation of valid NVIDIA domains."""
-    assert validate_nvidia_domain("https://developer.nvidia.com/") == True
-    assert validate_nvidia_domain("https://blogs.nvidia.com/") == True
-    assert validate_nvidia_domain("https://docs.nvidia.com/cuda/") == True
-    assert validate_nvidia_domain("https://nvidia.com/") == True
-    assert validate_nvidia_domain("http://nvidianews.nvidia.com/") == True
+    assert validate_nvidia_domain("https://developer.nvidia.com/")
+    assert validate_nvidia_domain("https://blogs.nvidia.com/")
+    assert validate_nvidia_domain("https://docs.nvidia.com/cuda/")
+    assert validate_nvidia_domain("https://nvidia.com/")
+    assert validate_nvidia_domain("http://nvidianews.nvidia.com/")
 
 
 def test_validate_nvidia_domain_invalid():
     """Test validation rejects non-NVIDIA domains."""
-    assert validate_nvidia_domain("https://google.com/") == False
-    assert validate_nvidia_domain("https://example.com/") == False
-    assert validate_nvidia_domain("https://nvidia-fake.com/") == False
-    assert validate_nvidia_domain("https://notnvidia.com/") == False
+    assert not validate_nvidia_domain("https://google.com/")
+    assert not validate_nvidia_domain("https://example.com/")
+    assert not validate_nvidia_domain("https://nvidia-fake.com/")
+    assert not validate_nvidia_domain("https://notnvidia.com/")
 
 
 def test_relevance_score_normalization():
@@ -137,7 +138,75 @@ def test_relevance_score_normalization():
             "relevance_score": 100
         }
     ]
-    
+
     for result in results:
         score = result["relevance_score"]
         assert 0 <= score <= 100, f"Score {score} should be in range 0-100"
+
+
+@pytest.mark.asyncio
+async def test_call_tool_validates_domains():
+    """Test that call_tool validates caller-supplied domains."""
+    # Test with invalid domain
+    with pytest.raises(ValueError, match="Invalid domains detected"):
+        await call_tool(
+            name="search_nvidia",
+            arguments={
+                "query": "test",
+                "domains": ["https://google.com/", "https://developer.nvidia.com/"]
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_call_tool_accepts_valid_domains():
+    """Test that call_tool accepts valid NVIDIA domains."""
+    with patch('mcp_nvidia.server.search_all_domains', new=AsyncMock(return_value=[])):
+        result = await call_tool(
+            name="search_nvidia",
+            arguments={
+                "query": "test",
+                "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"]
+            }
+        )
+        assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_call_tool_accepts_none_domains():
+    """Test that call_tool accepts None for domains (uses defaults)."""
+    with patch('mcp_nvidia.server.search_all_domains', new=AsyncMock(return_value=[])):
+        result = await call_tool(
+            name="search_nvidia",
+            arguments={
+                "query": "test",
+                "domains": None
+            }
+        )
+        assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_call_tool_rejects_non_list_domains():
+    """Test that call_tool rejects non-list domain values."""
+    with pytest.raises(ValueError, match="domains must be a list"):
+        await call_tool(
+            name="search_nvidia",
+            arguments={
+                "query": "test",
+                "domains": "https://developer.nvidia.com/"
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_call_tool_rejects_empty_validated_domains():
+    """Test that call_tool rejects when all provided domains are invalid."""
+    with pytest.raises(ValueError, match="Invalid domains detected"):
+        await call_tool(
+            name="search_nvidia",
+            arguments={
+                "query": "test",
+                "domains": ["https://google.com/", "https://example.com/"]
+            }
+        )

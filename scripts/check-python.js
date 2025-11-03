@@ -29,7 +29,7 @@ async function main() {
   console.log('✓ Python 3 found');
   
   // Check if mcp-nvidia is installed
-  const hasMcpNvidia = await checkCommand('python3', ['-m', 'mcp_nvidia.server', '--version']);
+  const hasMcpNvidia = await checkCommand('python3', ['-m', 'mcp_nvidia', '--version']);
   
   if (!hasMcpNvidia) {
     console.log('\nInstalling mcp-nvidia Python package...');
