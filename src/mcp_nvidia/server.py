@@ -906,12 +906,7 @@ def format_content_results(results: list[dict[str, Any]], content_type: str, top
     
     for i, result in enumerate(results, 1):
         score = result.get("relevance_score", 0)
-        # Convert 0-100 score to 1-5 stars
-        # 0-19: 1 star, 20-39: 2 stars, 40-59: 3 stars, 60-79: 4 stars, 80-100: 5 stars
-        stars = max(1, min(5, (score // 20) + 1))
-        relevance = "⭐" * stars
-        
-        output.append(f"\n{i}. {result.get('title', 'Untitled')} {relevance} (Score: {score}/100)")
+        output.append(f"\n{i}. {result.get('title', 'Untitled')} (Score: {score}/100)")
         if url := result.get('url'):
             output.append(f"   URL: {url}")
         if snippet := result.get('snippet'):
