@@ -31,11 +31,9 @@ The server searches across the following NVIDIA domains by default. You can cust
 
 ### Key Features
 
-- **🔒 Enterprise-grade security** with SSRF protection, rate limiting, and input validation
-- **📊 Structured JSON output** compatible with AI agents and LLMs
-- **🎯 Context-aware search** with enhanced snippets and relevance scoring
-- **⚡ High performance** with concurrent searches (~5 searches/sec)
-- **🔍 Domain-specific filtering** for targeted searches
+- **Structured JSON output** compatible with AI agents and LLMs
+- **Context-aware search** with enhanced snippets and relevance scoring
+- **Domain-specific filtering** for targeted searches
 
 ## Installation
 
