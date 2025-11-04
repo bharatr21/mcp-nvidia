@@ -3,6 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Repo-specific
+dev_hot_reload.py
+test_mcp_venv/
+test_venv/
+
 # C extensions
 *.so
 
@@ -25,6 +30,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+PUBLISHING.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
