@@ -799,22 +799,22 @@ def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
 
     # Calculate raw score based on keyword matches
     raw_score = 0
-    max_score_per_keyword = 10  # Higher scores for better differentiation
+    max_score_per_keyword = 6  # 3 + 2 + 1
 
     for keyword in keywords:
         keyword_score = 0
 
-        # Title matches are most important (5 points)
+        # Title matches are most important (3 points)
         if keyword in title:
-            keyword_score += 5
-
-        # Snippet matches are moderately important (3 points)
-        if keyword in snippet:
             keyword_score += 3
 
-        # URL matches are least important (2 points)
-        if keyword in url:
+        # Snippet matches are moderately important (2 points)
+        if keyword in snippet:
             keyword_score += 2
+
+        # URL matches are least important (1 point)
+        if keyword in url:
+            keyword_score += 1
 
         raw_score += keyword_score
 
@@ -829,7 +829,7 @@ async def search_all_domains(
     query: str,
     domains: list[str] | None = None,
     max_results_per_domain: int = 3,
-    min_relevance_score: int = 33
+    min_relevance_score: int = 33,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
     Search across all NVIDIA domains.
@@ -838,7 +838,7 @@ async def search_all_domains(
         query: Search query
         domains: List of domains to search (uses DEFAULT_DOMAINS if None)
         max_results_per_domain: Maximum results per domain
-        min_relevance_score: Minimum relevance score threshold (0-100, default 33)
+        min_relevance_score: Minimum relevance score threshold (0-100, default 50)
 
     Returns:
         Tuple of (results, errors, warnings, timing_info)
@@ -976,7 +976,7 @@ async def discover_content(
     content_keywords = strategy.get("keywords", [])
 
     # Calculate max possible score for normalization
-    max_possible_score = len(content_keywords) * 10  # Consistent with search scoring
+    max_possible_score = len(content_keywords) * 6  # 3 + 2 + 1, consistent with search scoring
 
     for result in results:
         title = result.get("title", "").lower()
@@ -988,17 +988,17 @@ async def discover_content(
         for keyword in content_keywords:
             keyword_score = 0
 
-            # Title matches are most important (5 points)
+            # Title matches are most important (3 points)
             if keyword in title:
-                keyword_score += 5
-
-            # Snippet matches are moderately important (3 points)
-            if keyword in snippet:
                 keyword_score += 3
 
-            # URL matches are least important (2 points)
-            if keyword in url:
+            # Snippet matches are moderately important (2 points)
+            if keyword in snippet:
                 keyword_score += 2
+
+            # URL matches are least important (1 point)
+            if keyword in url:
+                keyword_score += 1
 
             raw_score += keyword_score
 
