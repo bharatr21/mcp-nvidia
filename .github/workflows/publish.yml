@@ -52,6 +52,9 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcp-nvidia
     steps:
     - uses: actions/checkout@v4
 

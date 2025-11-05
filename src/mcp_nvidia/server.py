@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+import signal
+import sys
 from typing import Any
 from urllib.parse import urlparse
 
@@ -33,8 +35,26 @@ except ImportError:
 
 # Configure logging
 log_level = os.getenv("MCP_NVIDIA_LOG_LEVEL", "INFO")
-logging.basicConfig(level=getattr(logging, log_level.upper()))
+
+# Set up logging to file (doesn't interfere with stdio)
+log_dir = os.path.expanduser("~/.mcp-nvidia")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "server.log")
+
+# Configure logging to file
+logging.basicConfig(
+    level=getattr(logging, log_level.upper()),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also log to stderr for client capture
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Log startup
+logger.info(f"MCP NVIDIA server starting (log level: {log_level})")
+logger.info(f"Logs written to: {log_file}")
 
 # Default NVIDIA domains to search
 DEFAULT_DOMAINS = [
@@ -1475,18 +1495,75 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
 
 async def run():
-    """Run the MCP server."""
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    """Run the MCP server with graceful shutdown handling."""
+    # Set up signal handlers for graceful shutdown
+    shutdown_event = asyncio.Event()
+
+    def signal_handler(signum, _frame):
+        """Handle shutdown signals."""
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+        shutdown_event.set()
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+
+    try:
+        logger.info("MCP server ready and waiting for connections")
+        async with stdio_server() as (read_stream, write_stream):
+            # Run server in a task so we can cancel it on shutdown
+            server_task = asyncio.create_task(
+                app.run(
+                    read_stream,
+                    write_stream,
+                    app.create_initialization_options()
+                )
+            )
+
+            # Wait for either server completion or shutdown signal
+            shutdown_task = asyncio.create_task(shutdown_event.wait())
+            _done, pending = await asyncio.wait(
+                [server_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # If shutdown was triggered, cancel the server
+            if shutdown_event.is_set():
+                logger.info("Cancelling server task...")
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    logger.info("Server task cancelled successfully")
+
+            # Cancel any remaining tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    except Exception as e:
+        logger.exception(f"Unexpected error in server: {e}")
+        raise
+    finally:
+        logger.info("MCP server shutdown complete")
 
 
 def main():
     """Main entry point."""
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        # This shouldn't normally be reached due to signal handlers,
+        # but handle it gracefully just in case
+        logger.info("Received keyboard interrupt")
+        sys.exit(0)
+    except Exception as e:
+        logger.exception(f"Fatal error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
