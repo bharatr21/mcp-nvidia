@@ -71,6 +71,42 @@ def validate_nvidia_domain(domain: str) -> bool:
         return False
 
 
+def is_ad_url(url: str) -> bool:
+    """
+    Check if a URL is an advertisement or tracking URL.
+
+    Args:
+        url: URL string to check
+
+    Returns:
+        True if the URL is an ad/tracking URL, False otherwise
+    """
+    try:
+        url_lower = url.lower()
+
+        # Block DuckDuckGo ad URLs
+        if "duckduckgo.com/y.js" in url_lower:
+            return True
+
+        # Block URLs with ad-related query parameters
+        ad_patterns = [
+            "ad_domain=",
+            "ad_provider=",
+            "ad_type=",
+            "adurl=",
+            "adclick=",
+        ]
+
+        for pattern in ad_patterns:
+            if pattern in url_lower:
+                return True
+
+        return False
+    except Exception as e:
+        logger.debug(f"Error checking ad URL {url}: {e}")
+        return False
+
+
 # Allow override via environment variable (comma-separated list)
 if custom_domains := os.getenv("MCP_NVIDIA_DOMAINS"):
     raw_domains = [d.strip() for d in custom_domains.split(",") if d.strip()]
@@ -638,6 +674,16 @@ async def search_nvidia_domain(
                 snippet = result.get('body', '')
 
                 if not title or not url:
+                    continue
+
+                # SECURITY: Block ad URLs and tracking URLs
+                if is_ad_url(url):
+                    logger.debug(f"Skipping ad URL: {url}")
+                    continue
+
+                # SECURITY: Re-validate that the result URL is from an NVIDIA domain
+                if not validate_nvidia_domain(url):
+                    logger.debug(f"Skipping non-NVIDIA URL: {url}")
                     continue
 
                 # Fetch enhanced context with highlighted snippet

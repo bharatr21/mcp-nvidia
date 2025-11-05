@@ -258,3 +258,48 @@ async def test_rate_limiting():
         # With 0.2s (200ms) interval, 6 requests should take at least 1.0s
         # Allow some tolerance for timing variations
         assert elapsed >= 0.9, f"Rate limiting too fast: {elapsed:.2f}s (expected >=0.9s)"
+
+
+def test_ad_url_blocking():
+    """Test that ad URLs are correctly identified and blocked."""
+    from mcp_nvidia.server import is_ad_url
+
+    # Test DuckDuckGo ad URLs
+    assert is_ad_url("https://duckduckgo.com/y.js?ad_domain=wyzant.com&ad_provider=bingv7aa&ad_type=txad")
+    assert is_ad_url("https://duckduckgo.com/y.js?ad_domain=example.com")
+
+    # Test URLs with ad parameters
+    assert is_ad_url("https://example.com/?ad_domain=test.com")
+    assert is_ad_url("https://example.com/?ad_provider=google")
+    assert is_ad_url("https://example.com/?ad_type=banner")
+    assert is_ad_url("https://example.com/?adurl=https://ad.com")
+    assert is_ad_url("https://example.com/?adclick=123")
+
+    # Test valid URLs should not be blocked
+    assert not is_ad_url("https://developer.nvidia.com/cuda")
+    assert not is_ad_url("https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/")
+    assert not is_ad_url("https://nvidia.github.io/cuda-python/")
+
+
+@pytest.mark.asyncio
+async def test_search_results_no_ads():
+    """Test that search results don't contain ad URLs."""
+    async with MCPTestSession() as session:
+        result = await session.call_tool(
+            "search_nvidia",
+            arguments={
+                "query": "CUDA",
+                "max_results_per_domain": 5
+            }
+        )
+
+        assert result.content, "Result should have content"
+        response = json.loads(result.content[0].text)
+
+        # Check that no results contain ad URLs
+        if response.get('results'):
+            for result_item in response['results']:
+                url = result_item.get('url', '')
+                # Import the function to check
+                from mcp_nvidia.server import is_ad_url
+                assert not is_ad_url(url), f"Ad URL found in results: {url}"
