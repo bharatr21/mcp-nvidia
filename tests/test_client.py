@@ -281,6 +281,49 @@ def test_ad_url_blocking():
     assert not is_ad_url("https://nvidia.github.io/cuda-python/")
 
 
+def test_keyword_extraction():
+    """Test that keywords are correctly extracted from queries."""
+    from mcp_nvidia.server import extract_keywords
+
+    # Test basic keyword extraction
+    keywords = extract_keywords("How to install CUDA for deep learning")
+    assert "cuda" in keywords
+    assert "deep" in keywords
+    assert "learning" in keywords
+    assert "install" in keywords
+    # Stopwords should be filtered out
+    assert "how" not in keywords
+    assert "to" not in keywords
+    assert "for" not in keywords
+
+    # Test with technical terms
+    keywords = extract_keywords("TensorRT optimization guide")
+    assert "tensorrt" in keywords
+    assert "optimization" in keywords
+    assert "guide" in keywords
+
+    # Test with mixed case
+    keywords = extract_keywords("NVIDIA GPU Programming")
+    assert "nvidia" in keywords
+    assert "gpu" in keywords
+    assert "programming" in keywords
+
+    # Test empty or stopword-only queries
+    keywords = extract_keywords("the and or")
+    assert len(keywords) == 0
+
+    # Test with punctuation
+    keywords = extract_keywords("What is CUDA? How does it help?")
+    assert "cuda" in keywords
+    assert "help" in keywords
+    # Stopwords should be filtered out
+    assert "what" not in keywords
+    assert "is" not in keywords
+    assert "how" not in keywords
+    assert "does" not in keywords
+    assert "it" not in keywords
+
+
 @pytest.mark.asyncio
 async def test_search_results_no_ads():
     """Test that search results don't contain ad URLs."""

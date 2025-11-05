@@ -32,6 +32,7 @@ The server searches across the following NVIDIA domains by default. You can cust
 ### Key Features
 
 - **Structured JSON output** compatible with AI agents and LLMs
+- **Intelligent keyword extraction** using NLTK stopwords for better relevance
 - **Context-aware search** with enhanced snippets and relevance scoring
 - **Domain-specific filtering** for targeted searches
 

@@ -15,6 +15,22 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, CallToolResult
 
+# Import NLTK stopwords
+try:
+    from nltk.corpus import stopwords
+    import nltk
+    try:
+        STOPWORDS = set(stopwords.words('english'))
+    except LookupError:
+        nltk.download('stopwords', quiet=True)
+        STOPWORDS = set(stopwords.words('english'))
+except ImportError:
+    STOPWORDS = {
+        'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+        'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+        'to', 'was', 'will', 'with', 'this', 'but', 'or', 'not', 'can'
+    }
+
 # Configure logging
 log_level = os.getenv("MCP_NVIDIA_LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level.upper()))
@@ -174,6 +190,40 @@ DOMAIN_CATEGORY_MAP = [
 ]
 
 
+def extract_keywords(query: str) -> list[str]:
+    """
+    Extract meaningful keywords from a query string.
+
+    Filters out stopwords and very short words to get actual keywords.
+
+    Args:
+        query: Search query string
+
+    Returns:
+        List of keywords (non-stopwords, meaningful words)
+    """
+    # Split and normalize
+    words = query.lower().split()
+
+    # Filter out stopwords and very short words
+    keywords = []
+    for word in words:
+        # Remove common punctuation
+        cleaned = word.strip('.,!?;:()"\'')
+
+        # Keep if:
+        # - Not a stopword
+        # - Length >= 2 characters
+        # - Contains at least one letter (to avoid pure numbers/symbols unless they're tech terms)
+        if (cleaned and
+            cleaned not in STOPWORDS and
+            len(cleaned) >= 2 and
+            any(c.isalpha() for c in cleaned)):
+            keywords.append(cleaned)
+
+    return keywords
+
+
 def get_domain_category(domain: str) -> str:
     """
     Categorize an NVIDIA domain.
@@ -196,7 +246,9 @@ def get_domain_category(domain: str) -> str:
 
 def extract_matched_keywords(query: str, result: dict[str, Any]) -> list[str]:
     """
-    Extract which query terms matched in the result.
+    Extract which meaningful keywords from the query matched in the result.
+
+    Only returns actual keywords (non-stopwords) that appear in the result.
 
     Args:
         query: Search query string
@@ -205,15 +257,17 @@ def extract_matched_keywords(query: str, result: dict[str, Any]) -> list[str]:
     Returns:
         List of matched keywords from the query
     """
-    query_terms = query.lower().split()
+    # Extract only meaningful keywords from query
+    keywords = extract_keywords(query)
+
     title = result.get("title", "").lower()
     snippet = result.get("snippet", "").lower()
     url = result.get("url", "").lower()
 
     matched = []
-    for term in query_terms:
-        if term in title or term in snippet or term in url:
-            matched.append(term)
+    for keyword in keywords:
+        if keyword in title or keyword in snippet or keyword in url:
+            matched.append(keyword)
 
     return matched
 
@@ -721,41 +775,53 @@ async def search_nvidia_domain(
 
 def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
     """
-    Calculate relevance score for a search result based on query term matches.
-    
+    Calculate relevance score for a search result based on keyword matches.
+
+    Uses only meaningful keywords (non-stopwords) from the query.
+    Weighs title matches higher than snippet, and snippet higher than URL.
+
     Args:
         result: Search result dictionary
         query: Search query string
-        
+
     Returns:
         Relevance score from 0-100
     """
     title = result.get("title", "").lower()
     snippet = result.get("snippet", "").lower()
     url = result.get("url", "").lower()
-    
-    # Split query into terms
-    query_terms = query.lower().split()
-    
-    if not query_terms:
+
+    # Extract meaningful keywords only (no stopwords)
+    keywords = extract_keywords(query)
+
+    if not keywords:
         return 0
-    
-    # Calculate raw score based on term matches
+
+    # Calculate raw score based on keyword matches
     raw_score = 0
-    max_score_per_term = 6  # 3 for title + 2 for snippet + 1 for URL
-    
-    for term in query_terms:
-        if term in title:
-            raw_score += 3
-        if term in snippet:
-            raw_score += 2
-        if term in url:
-            raw_score += 1
-    
+    max_score_per_keyword = 10  # Higher scores for better differentiation
+
+    for keyword in keywords:
+        keyword_score = 0
+
+        # Title matches are most important (5 points)
+        if keyword in title:
+            keyword_score += 5
+
+        # Snippet matches are moderately important (3 points)
+        if keyword in snippet:
+            keyword_score += 3
+
+        # URL matches are least important (2 points)
+        if keyword in url:
+            keyword_score += 2
+
+        raw_score += keyword_score
+
     # Normalize to 0-100 scale
-    max_possible_score = len(query_terms) * max_score_per_term
+    max_possible_score = len(keywords) * max_score_per_keyword
     normalized_score = int((raw_score / max_possible_score) * 100) if max_possible_score > 0 else 0
-    
+
     return normalized_score
 
 
@@ -907,35 +973,45 @@ async def discover_content(
     
     # Filter and rank results based on content type keywords
     filtered_results = []
-    keywords = strategy.get("keywords", [])
-    
+    content_keywords = strategy.get("keywords", [])
+
     # Calculate max possible score for normalization
-    max_possible_score = len(keywords) * 6  # 3 for title + 2 for snippet + 1 for URL
-    
+    max_possible_score = len(content_keywords) * 10  # Consistent with search scoring
+
     for result in results:
         title = result.get("title", "").lower()
         snippet = result.get("snippet", "").lower()
         url = result.get("url", "").lower()
-        
-        # Calculate raw relevance score based on keyword matches
+
+        # Calculate raw relevance score based on content-type keyword matches
         raw_score = 0
-        for keyword in keywords:
+        for keyword in content_keywords:
+            keyword_score = 0
+
+            # Title matches are most important (5 points)
             if keyword in title:
-                raw_score += 3
+                keyword_score += 5
+
+            # Snippet matches are moderately important (3 points)
             if keyword in snippet:
-                raw_score += 2
+                keyword_score += 3
+
+            # URL matches are least important (2 points)
             if keyword in url:
-                raw_score += 1
-        
+                keyword_score += 2
+
+            raw_score += keyword_score
+
         # Normalize to 0-100 scale
         if max_possible_score > 0:
             normalized_score = int((raw_score / max_possible_score) * 100)
         else:
-            normalized_score = 0
-        
+            # If no content keywords, use the original query-based relevance
+            normalized_score = result.get("relevance_score", 0)
+
         result["relevance_score"] = normalized_score
         filtered_results.append(result)
-    
+
     # Sort by relevance score (highest first) and limit results
     filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
