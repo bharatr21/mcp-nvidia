@@ -1099,7 +1099,7 @@ async def search_all_domains(
 
     start_time = time.time()
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         # Search all domains concurrently with timing
         domain_start_times = {domain: time.time() for domain in domains}
 
@@ -1877,7 +1877,7 @@ Examples:
     # http subcommand
     http_parser = subparsers.add_parser("http", help="Run in HTTP/SSE mode (for remote access)")
 
-    http_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0 for all interfaces)")
+    http_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0 for all interfaces)")  # nosec B104
 
     http_parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
 

@@ -4,11 +4,13 @@ MCP server to search across NVIDIA blogs and releases to empower LLMs to better 
 
 ## Overview
 
-This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to search across multiple NVIDIA domains to find relevant information about NVIDIA technologies, products, and services.
+This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to search across
+multiple NVIDIA domains to find relevant information about NVIDIA technologies, products, and services.
 
 ### Supported Domains (15 default, customizable)
 
-The server searches across the following NVIDIA domains by default. You can customize this list using the `MCP_NVIDIA_DOMAINS` environment variable or the `domains` parameter in search queries:
+The server searches across the following NVIDIA domains by default. You can customize this list using the
+`MCP_NVIDIA_DOMAINS` environment variable or the `domains` parameter in search queries:
 
 - **blogs.nvidia.com** - NVIDIA blog posts and articles
 - **build.nvidia.com** - NVIDIA AI Foundation models and services
@@ -31,21 +33,19 @@ The server searches across the following NVIDIA domains by default. You can cust
 ### Key Features
 
 #### Search & Ranking
-- **Advanced relevance scoring** combining multiple signals:
-  - **TF-IDF re-ranking** for semantic relevance
-  - **Fuzzy keyword matching** handles typos and variations (80% threshold)
-  - **Phrase matching** for multi-word queries
-  - **Domain-specific boosting** (docs domains prioritized for technical queries)
-- **Intelligent keyword extraction** using NLTK stopwords (179 words)
+
+- **Advanced relevance scoring** combining multiple signals
+- **Intelligent keyword extraction**
 - **Context-aware search** with enhanced snippets and highlighting
-- **Ad filtering** blocks tracking and advertisement URLs
 
 #### Connectivity
+
 - **stdio mode** (default) - for local MCP clients like Claude Desktop
 - **HTTP/SSE mode** - for remote access and web-based clients
 - **Structured JSON output** compatible with AI agents and LLMs
 
 #### Customization
+
 - **Domain-specific filtering** for targeted searches
 - **Configurable domains** via environment variable
 - **Adjustable relevance thresholds** and result limits
@@ -107,6 +107,7 @@ The server can be configured using environment variables:
 - `MCP_NVIDIA_LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 Example:
+
 ```bash
 export MCP_NVIDIA_DOMAINS="https://developer.nvidia.com/,https://docs.nvidia.com/"
 export MCP_NVIDIA_LOG_LEVEL="DEBUG"
@@ -195,12 +196,14 @@ mcp-nvidia  # same as stdio
 Search across NVIDIA domains for specific information. Results include citations with URLs for easy reference.
 
 **Parameters:**
+
 - `query` (required): The search query to find information across NVIDIA domains
 - `domains` (optional): List of specific NVIDIA domains to search. If not provided, searches all default domains
 - `max_results_per_domain` (optional): Maximum number of results to return per domain (default: 3)
 - `min_relevance_score` (optional): Minimum relevance score threshold (0-100) to filter results (default: 17)
 
 **Example queries:**
+
 - "CUDA programming best practices"
 - "RTX 4090 specifications"
 - "TensorRT optimization techniques"
@@ -208,10 +211,14 @@ Search across NVIDIA domains for specific information. Results include citations
 - "Omniverse development tutorials"
 
 **Features:**
+
 - **Enhanced search using ddgs package** for reliable DuckDuckGo integration with domain filtering
-- **Structured JSON output**: Returns data in a structured format with both machine-readable and human-readable fields
-- **Context-aware snippets**: Automatically fetches surrounding text from source URLs and highlights the relevant snippet with `**bold**` formatting
-- **Relevance scoring (0-100 scale)**: Each result includes a relevance score based on query term matches in title, snippet, and URL
+- **Structured JSON output**: Returns data in a structured format with both machine-readable and
+  human-readable fields
+- **Context-aware snippets**: Automatically fetches surrounding text from source URLs and highlights the
+  relevant snippet with `**bold**` formatting
+- **Relevance scoring (0-100 scale)**: Each result includes a relevance score based on query term matches in
+  title, snippet, and URL
   - Results are sorted by relevance score (highest first)
   - Results below the threshold are automatically filtered out
   - Score displayed as "Score: X/100" in formatted text
@@ -227,6 +234,7 @@ Search across NVIDIA domains for specific information. Results include citations
 
 **Output Format:**
 Results are returned as structured JSON with the following schema:
+
 ```json
 {
   "success": true,
@@ -249,9 +257,11 @@ Results are returned as structured JSON with the following schema:
 
 ### discover_nvidia_content
 
-Discover specific types of NVIDIA educational and learning content such as videos, courses, tutorials, webinars, or blog posts.
+Discover specific types of NVIDIA educational and learning content such as videos, courses, tutorials,
+webinars, or blog posts.
 
 **Parameters:**
+
 - `content_type` (required): Type of content to find - one of:
   - `video`: Video tutorials and demonstrations
   - `course`: Training courses and certifications (NVIDIA DLI)
@@ -262,11 +272,13 @@ Discover specific types of NVIDIA educational and learning content such as video
 - `max_results` (optional): Maximum number of content items to return (default: 5)
 
 **Example queries:**
+
 - Find video tutorials: `discover_nvidia_content(content_type="video", topic="CUDA programming")`
 - Find training courses: `discover_nvidia_content(content_type="course", topic="Deep Learning")`
 - Find webinars: `discover_nvidia_content(content_type="webinar", topic="AI in Healthcare")`
 
 **Features:**
+
 - Content-specific search strategies optimized for each type
 - **Relevance scoring on 0-100 scale** to highlight best matches
   - Score displayed as "Score: X/100" for transparency
@@ -382,7 +394,8 @@ flowchart TD
 
 ## Extending Domain Coverage
 
-The list of searchable domains is configured in `src/mcp_nvidia/server.py` in the `DEFAULT_DOMAINS` constant. To add more NVIDIA domains:
+The list of searchable domains is configured in `src/mcp_nvidia/server.py` in the `DEFAULT_DOMAINS` constant.
+To add more NVIDIA domains:
 
 1. Edit `src/mcp_nvidia/server.py`
 2. Add new domain URLs to the `DEFAULT_DOMAINS` list

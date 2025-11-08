@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
+from mcp_nvidia import __version__
 from mcp_nvidia.server import app as mcp_app
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ async def handle_sse(request: Request) -> Response:
     """Handle SSE connections for MCP."""
     logger.info("New SSE connection established")
 
-    async with sse.connect_sse(request.scope, request.receive, request.scope['send']) as (read_stream, write_stream):
+    async with sse.connect_sse(request.scope, request.receive, request.scope["send"]) as (read_stream, write_stream):
         await mcp_app.run(read_stream, write_stream, mcp_app.create_initialization_options())
 
 
@@ -37,7 +38,7 @@ async def health_check(request: Request) -> Response:
             "status": "healthy",
             "service": "mcp-nvidia",
             "transport": "http-sse",
-            "version": "0.2.0",
+            "version": __version__,
             "endpoints": {"sse": "/sse", "messages": "/messages/", "health": "/health"},
         }
     )
@@ -55,7 +56,7 @@ http_app = Starlette(
 )
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8000):
+def run_http_server(host: str = "0.0.0.0", port: int = 8000):  # nosec B104
     """
     Run the HTTP/SSE server.
 

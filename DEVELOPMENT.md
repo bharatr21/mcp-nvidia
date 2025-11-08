@@ -83,6 +83,7 @@ Ruff replaces: flake8, isort, black, pylint, pyupgrade, and more.
 **Configuration:** `pyproject.toml` under `[tool.ruff]`
 
 **Common commands:**
+
 ```bash
 ruff check .              # Check for issues
 ruff check . --fix        # Auto-fix issues
@@ -91,6 +92,7 @@ ruff format --check .     # Check formatting
 ```
 
 **Selected rules:**
+
 - E/W: pycodestyle (PEP 8)
 - F: pyflakes
 - I: isort (import sorting)
@@ -116,6 +118,7 @@ mypy --strict src/        # Strict mode (more checks)
 **Configuration:** `.pre-commit-config.yaml`
 
 **Hooks enabled:**
+
 - Ruff (linting + formatting)
 - General file checks (trailing whitespace, file endings, etc.)
 - Bandit (security checks)
@@ -132,17 +135,20 @@ pre-commit autoupdate             # Update hook versions
 ### GitHub Actions Workflows
 
 **`.github/workflows/lint.yml`** - Code quality checks:
+
 - Ruff linting
 - Ruff formatting
 - Mypy type checking
 - Test coverage
 
 **`.github/workflows/test.yml`** - Tests across Python versions:
+
 - Python 3.10, 3.11, 3.12
 - Full test suite
 - Package build verification
 
 **`.github/workflows/publish.yml`** - Publishing:
+
 - Automated releases to PyPI/npm
 
 All workflows run on push to `main` and on pull requests.

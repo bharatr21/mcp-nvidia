@@ -62,13 +62,16 @@ clean: ## Clean up build artifacts and cache
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 
+sync-version: ## Sync version from pyproject.toml to package.json
+	python scripts/sync-version.py
+
 build: ## Build the package
 	python -m build
 
-publish-test: ## Publish to TestPyPI
+publish-test: sync-version build ## Publish to TestPyPI
 	python -m twine upload --repository testpypi dist/*
 
-publish: ## Publish to PyPI
+publish: sync-version build ## Publish to PyPI
 	python -m twine upload dist/*
 
 run: ## Run the MCP server (stdio mode)

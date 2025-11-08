@@ -8,12 +8,12 @@ const { spawnSync } = require('child_process');
 function findPythonCommand() {
   return new Promise((resolve) => {
     const uvCheck = spawn('uv', ['--version']);
-    
+
     uvCheck.on('error', () => {
       // uv not available, use python
       resolve(findPython());
     });
-    
+
     uvCheck.on('close', (code) => {
       if (code === 0) {
         // uv is available
@@ -43,7 +43,7 @@ function findPython() {
 async function main() {
   try {
     const [command, ...args] = await findPythonCommand();
-    
+
     const child = spawn(command, args, {
       stdio: 'inherit',
       env: {

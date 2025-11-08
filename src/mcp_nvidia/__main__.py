@@ -8,6 +8,7 @@ def main():
     # Check for --version flag
     if len(sys.argv) > 1 and sys.argv[1] == "--version":
         from mcp_nvidia import __version__
+
         print(__version__)
         sys.exit(0)
 

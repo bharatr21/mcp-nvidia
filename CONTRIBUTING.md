@@ -5,17 +5,20 @@ Thank you for your interest in contributing to mcp-nvidia! This document provide
 ## Development Setup
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/bharatr21/mcp-nvidia.git
    cd mcp-nvidia
    ```
 
 2. **Install uv (if not already installed)**
+
    ```bash
    pip install uv
    ```
 
 3. **Create a virtual environment and install dependencies**
+
    ```bash
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
@@ -24,6 +27,7 @@ Thank you for your interest in contributing to mcp-nvidia! This document provide
    ```
 
    **Or use the Makefile (Linux/macOS):**
+
    ```bash
    make install-dev
    ```
@@ -50,9 +54,11 @@ This project uses modern Python tooling to ensure code quality:
 
 ### Ruff - Linting & Formatting
 
-We use **Ruff**, an extremely fast Python linter and formatter that replaces multiple tools (flake8, isort, black, pylint, etc.).
+We use **Ruff**, an extremely fast Python linter and formatter that replaces multiple tools
+(flake8, isort, black, pylint, etc.).
 
 **Check for issues:**
+
 ```bash
 # Check for linting issues
 ruff check .
@@ -62,6 +68,7 @@ ruff format --check .
 ```
 
 **Auto-fix issues:**
+
 ```bash
 # Fix linting issues automatically
 ruff check . --fix
@@ -71,6 +78,7 @@ ruff format .
 ```
 
 **Quick fix everything:**
+
 ```bash
 ruff check . --fix && ruff format .
 ```
@@ -106,6 +114,26 @@ mypy src/
 - Write docstrings for all public functions and classes
 - Keep functions focused and single-purpose
 - Avoid relative imports (use absolute imports)
+
+## Version Management
+
+**Single source of truth:** `pyproject.toml`
+
+To update the version:
+
+```bash
+# 1. Edit pyproject.toml
+vim pyproject.toml  # Change version = "0.1.2"
+
+# 2. Sync to package.json
+python scripts/sync-version.py
+
+# 3. Commit
+git add pyproject.toml package.json
+git commit -m "Bump version to 0.1.2"
+```
+
+The version is automatically read from `pyproject.toml` by the package at runtime.
 
 ## Adding New Features
 
@@ -148,6 +176,7 @@ mypy src/
 ## Questions?
 
 If you have questions or need help, please:
+
 - Open an issue on GitHub
 - Provide as much context as possible
 - Include code examples if relevant
