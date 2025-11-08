@@ -10,31 +10,38 @@ Usage:
 """
 
 import json
-import re
 import sys
 from pathlib import Path
+
+# Conditional import: tomllib (Python 3.11+) or tomli (fallback)
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 # Project root is one level up from scripts/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def get_version_from_pyproject() -> str:
-    """Extract version from pyproject.toml."""
+    """Extract version from pyproject.toml [project] section."""
     pyproject_path = PROJECT_ROOT / "pyproject.toml"
 
     if not pyproject_path.exists():
         print(f"Error: {pyproject_path} not found", file=sys.stderr)
         sys.exit(1)
 
-    content = pyproject_path.read_text()
+    # Read TOML file in binary mode
+    with pyproject_path.open("rb") as f:
+        data = tomllib.load(f)
 
-    # Match version = "x.y.z" in [project] section
-    match = re.search(r'version\s*=\s*"([^"]+)"', content)
-    if not match:
-        print("Error: Could not find version in pyproject.toml", file=sys.stderr)
+    # Extract version from [project] section
+    version = data.get("project", {}).get("version")
+    if not version:
+        print("Error: Could not find version in [project] section of pyproject.toml", file=sys.stderr)
         sys.exit(1)
 
-    return match.group(1)
+    return version
 
 
 def update_package_json(version: str) -> None:

@@ -40,6 +40,7 @@ dependencies = [
     "uvicorn>=0.30.0",  # ASGI server for HTTP transport
     "starlette>=0.37.0",  # Web framework for HTTP/SSE
     "python-multipart>=0.0.9",  # For form data parsing
+    "tomli>=2.0.0; python_version<'3.11'",  # TOML parser for Python < 3.11 (stdlib in 3.11+)
 ]
 
 [project.urls]
