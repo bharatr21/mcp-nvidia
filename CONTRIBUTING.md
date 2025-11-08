@@ -20,6 +20,12 @@ Thank you for your interest in contributing to mcp-nvidia! This document provide
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    uv pip install -e ".[dev]"
+   pre-commit install  # Install git hooks
+   ```
+
+   **Or use the Makefile (Linux/macOS):**
+   ```bash
+   make install-dev
    ```
 
 ## Running Tests
@@ -38,12 +44,68 @@ pytest tests/test_server.py -v
 pytest tests/ --cov=mcp_nvidia --cov-report=html
 ```
 
-## Code Style
+## Code Quality & Linting
 
-- Follow PEP 8 guidelines
+This project uses modern Python tooling to ensure code quality:
+
+### Ruff - Linting & Formatting
+
+We use **Ruff**, an extremely fast Python linter and formatter that replaces multiple tools (flake8, isort, black, pylint, etc.).
+
+**Check for issues:**
+```bash
+# Check for linting issues
+ruff check .
+
+# Check formatting
+ruff format --check .
+```
+
+**Auto-fix issues:**
+```bash
+# Fix linting issues automatically
+ruff check . --fix
+
+# Format code
+ruff format .
+```
+
+**Quick fix everything:**
+```bash
+ruff check . --fix && ruff format .
+```
+
+### Pre-commit Hooks (Recommended)
+
+Install pre-commit hooks to automatically check code before commits:
+
+```bash
+# Install pre-commit hooks (one-time setup)
+pre-commit install
+
+# Run manually on all files
+pre-commit run --all-files
+```
+
+Once installed, hooks will run automatically on `git commit`.
+
+### Type Checking
+
+We use **mypy** for static type checking:
+
+```bash
+# Check types
+mypy src/
+```
+
+### Code Style Guidelines
+
+- Follow PEP 8 (enforced by Ruff)
+- Line length: 120 characters
 - Use type hints where appropriate
 - Write docstrings for all public functions and classes
 - Keep functions focused and single-purpose
+- Avoid relative imports (use absolute imports)
 
 ## Adding New Features
 

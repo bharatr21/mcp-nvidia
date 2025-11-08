@@ -6,7 +6,7 @@ MCP server to search across NVIDIA blogs and releases to empower LLMs to better 
 
 This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to search across multiple NVIDIA domains to find relevant information about NVIDIA technologies, products, and services.
 
-### Supported Domains (16 default, customizable)
+### Supported Domains (15 default, customizable)
 
 The server searches across the following NVIDIA domains by default. You can customize this list using the `MCP_NVIDIA_DOMAINS` environment variable or the `domains` parameter in search queries:
 
@@ -20,7 +20,6 @@ The server searches across the following NVIDIA domains by default. You can cust
 - **docs.omniverse.nvidia.com** - Omniverse documentation
 - **forums.developer.nvidia.com** - Developer forums
 - **forums.nvidia.com** - Community forums
-- **gameworksdocs.nvidia.com** - GameWorks documentation
 - **ngc.nvidia.com** - NVIDIA GPU Cloud
 - **nvidia.github.io** - NVIDIA GitHub Pages documentation
 - **nvidianews.nvidia.com** - Official NVIDIA news and press releases
@@ -31,10 +30,25 @@ The server searches across the following NVIDIA domains by default. You can cust
 
 ### Key Features
 
+#### Search & Ranking
+- **Advanced relevance scoring** combining multiple signals:
+  - **TF-IDF re-ranking** for semantic relevance
+  - **Fuzzy keyword matching** handles typos and variations (80% threshold)
+  - **Phrase matching** for multi-word queries
+  - **Domain-specific boosting** (docs domains prioritized for technical queries)
+- **Intelligent keyword extraction** using NLTK stopwords (179 words)
+- **Context-aware search** with enhanced snippets and highlighting
+- **Ad filtering** blocks tracking and advertisement URLs
+
+#### Connectivity
+- **stdio mode** (default) - for local MCP clients like Claude Desktop
+- **HTTP/SSE mode** - for remote access and web-based clients
 - **Structured JSON output** compatible with AI agents and LLMs
-- **Intelligent keyword extraction** using NLTK stopwords for better relevance
-- **Context-aware search** with enhanced snippets and relevance scoring
+
+#### Customization
 - **Domain-specific filtering** for targeted searches
+- **Configurable domains** via environment variable
+- **Adjustable relevance thresholds** and result limits
 
 ## Installation
 
@@ -145,6 +159,35 @@ If you installed from source, you may need to use the full path to the Python ex
 }
 ```
 
+### HTTP Server Mode (Remote Access)
+
+For remote access or public deployment, use HTTP/SSE mode:
+
+```bash
+# Run in HTTP mode (default port 8000)
+mcp-nvidia http
+
+# Custom host and port
+mcp-nvidia http --host 0.0.0.0 --port 3000
+
+# Or explicitly use stdio mode (default)
+mcp-nvidia stdio
+mcp-nvidia  # same as stdio
+```
+
+**Configure Claude AI for remote server:**
+
+```json
+{
+  "mcpServers": {
+    "nvidia": {
+      "url": "https://your-server.com/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
 ## Available Tools
 
 ### search_nvidia
@@ -155,7 +198,7 @@ Search across NVIDIA domains for specific information. Results include citations
 - `query` (required): The search query to find information across NVIDIA domains
 - `domains` (optional): List of specific NVIDIA domains to search. If not provided, searches all default domains
 - `max_results_per_domain` (optional): Maximum number of results to return per domain (default: 3)
-- `min_relevance_score` (optional): Minimum relevance score threshold (0-100) to filter results (default: 33)
+- `min_relevance_score` (optional): Minimum relevance score threshold (0-100) to filter results (default: 17)
 
 **Example queries:**
 - "CUDA programming best practices"
