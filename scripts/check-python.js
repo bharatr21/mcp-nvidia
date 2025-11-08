@@ -12,9 +12,9 @@ function checkCommand(command, args = ['--version']) {
 
 async function main() {
   console.log('Checking Python installation...');
-  
+
   const hasPython = await checkCommand('python3', ['--version']);
-  
+
   if (!hasPython) {
     console.warn('\n⚠️  Warning: Python 3 not found.');
     console.warn('The mcp-nvidia package requires Python 3.10 or higher.');
@@ -25,12 +25,12 @@ async function main() {
     console.warn('  pip install mcp-nvidia');
     return;
   }
-  
+
   console.log('✓ Python 3 found');
-  
+
   // Check if mcp-nvidia is installed
   const hasMcpNvidia = await checkCommand('python3', ['-m', 'mcp_nvidia', '--version']);
-  
+
   if (!hasMcpNvidia) {
     console.log('\nInstalling mcp-nvidia Python package...');
     console.log('Run: pip install mcp-nvidia');

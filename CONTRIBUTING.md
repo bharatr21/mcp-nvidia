@@ -5,21 +5,31 @@ Thank you for your interest in contributing to mcp-nvidia! This document provide
 ## Development Setup
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/bharatr21/mcp-nvidia.git
    cd mcp-nvidia
    ```
 
 2. **Install uv (if not already installed)**
+
    ```bash
    pip install uv
    ```
 
 3. **Create a virtual environment and install dependencies**
+
    ```bash
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    uv pip install -e ".[dev]"
+   pre-commit install  # Install git hooks
+   ```
+
+   **Or use the Makefile (Linux/macOS):**
+
+   ```bash
+   make install-dev
    ```
 
 ## Running Tests
@@ -38,12 +48,92 @@ pytest tests/test_server.py -v
 pytest tests/ --cov=mcp_nvidia --cov-report=html
 ```
 
-## Code Style
+## Code Quality & Linting
 
-- Follow PEP 8 guidelines
+This project uses modern Python tooling to ensure code quality:
+
+### Ruff - Linting & Formatting
+
+We use **Ruff**, an extremely fast Python linter and formatter that replaces multiple tools
+(flake8, isort, black, pylint, etc.).
+
+**Check for issues:**
+
+```bash
+# Check for linting issues
+ruff check .
+
+# Check formatting
+ruff format --check .
+```
+
+**Auto-fix issues:**
+
+```bash
+# Fix linting issues automatically
+ruff check . --fix
+
+# Format code
+ruff format .
+```
+
+**Quick fix everything:**
+
+```bash
+ruff check . --fix && ruff format .
+```
+
+### Pre-commit Hooks (Recommended)
+
+Install pre-commit hooks to automatically check code before commits:
+
+```bash
+# Install pre-commit hooks (one-time setup)
+pre-commit install
+
+# Run manually on all files
+pre-commit run --all-files
+```
+
+Once installed, hooks will run automatically on `git commit`.
+
+### Type Checking
+
+We use **mypy** for static type checking:
+
+```bash
+# Check types
+mypy src/
+```
+
+### Code Style Guidelines
+
+- Follow PEP 8 (enforced by Ruff)
+- Line length: 120 characters
 - Use type hints where appropriate
 - Write docstrings for all public functions and classes
 - Keep functions focused and single-purpose
+- Avoid relative imports (use absolute imports)
+
+## Version Management
+
+**Single source of truth:** `pyproject.toml`
+
+To update the version:
+
+```bash
+# 1. Edit pyproject.toml
+vim pyproject.toml  # Change version = "0.1.2"
+
+# 2. Sync to package.json
+python scripts/sync-version.py
+
+# 3. Commit
+git add pyproject.toml package.json
+git commit -m "Bump version to 0.1.2"
+```
+
+The version is automatically read from `pyproject.toml` by the package at runtime.
 
 ## Adding New Features
 
@@ -86,6 +176,7 @@ pytest tests/ --cov=mcp_nvidia --cov-report=html
 ## Questions?
 
 If you have questions or need help, please:
+
 - Open an issue on GitHub
 - Provide as much context as possible
 - Include code examples if relevant

@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to PyPI and npm
 
 on:
   release:
@@ -49,7 +49,7 @@ jobs:
         uv pip install build
         python -m build
 
-  publish:
+  publish-pypi:
     needs: test
     runs-on: ubuntu-latest
     environment:
@@ -63,9 +63,11 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Sync version from pyproject.toml
+      run: python scripts/sync-version.py
+
     - name: Install dependencies
-      run: |
-        pip install build twine
+      run: pip install build twine
 
     - name: Build package
       run: python -m build
@@ -75,3 +77,32 @@ jobs:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
       run: twine upload dist/*
+
+  publish-npm:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for npm provenance
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@bharatr21/mcp-nvidia
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Set up Python (for version sync)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Sync version from pyproject.toml
+      run: python scripts/sync-version.py
+
+    - name: Publish to npm
+      run: npm publish --provenance --access public

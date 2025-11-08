@@ -1,12 +1,14 @@
 """MCP server for searching across NVIDIA domains."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -15,40 +17,69 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent, CallToolResult
+from mcp.types import CallToolResult, TextContent, Tool
+from rapidfuzz import fuzz
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Import NLTK stopwords
 try:
-    from nltk.corpus import stopwords
     import nltk
+    from nltk.corpus import stopwords
+
     try:
-        STOPWORDS = set(stopwords.words('english'))
+        STOPWORDS = set(stopwords.words("english"))
     except LookupError:
-        nltk.download('stopwords', quiet=True)
-        STOPWORDS = set(stopwords.words('english'))
+        nltk.download("stopwords", quiet=True)
+        STOPWORDS = set(stopwords.words("english"))
 except ImportError:
     STOPWORDS = {
-        'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-        'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-        'to', 'was', 'will', 'with', 'this', 'but', 'or', 'not', 'can'
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "has",
+        "he",
+        "in",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "that",
+        "the",
+        "to",
+        "was",
+        "will",
+        "with",
+        "this",
+        "but",
+        "or",
+        "not",
+        "can",
     }
 
 # Configure logging
 log_level = os.getenv("MCP_NVIDIA_LOG_LEVEL", "INFO")
 
 # Set up logging to file (doesn't interfere with stdio)
-log_dir = os.path.expanduser("~/.mcp-nvidia")
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "server.log")
+log_dir = Path.home() / ".mcp-nvidia"
+log_dir.mkdir(parents=True, exist_ok=True)
+log_file = log_dir / "server.log"
 
 # Configure logging to file
 logging.basicConfig(
     level=getattr(logging, log_level.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(log_file),
-        logging.StreamHandler()  # Also log to stderr for client capture
-    ]
+        logging.StreamHandler(),  # Also log to stderr for client capture
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -68,7 +99,6 @@ DEFAULT_DOMAINS = [
     "https://docs.omniverse.nvidia.com/",
     "https://forums.developer.nvidia.com/",
     "https://forums.nvidia.com/",
-    "https://gameworksdocs.nvidia.com/",
     "https://ngc.nvidia.com/",
     "https://nvidia.github.io/",
     "https://nvidianews.nvidia.com/",
@@ -89,7 +119,7 @@ def validate_nvidia_domain(domain: str) -> bool:
     """
     try:
         parsed = urlparse(domain)
-        hostname = parsed.netloc or parsed.path.split('/')[0]
+        hostname = parsed.netloc or parsed.path.split("/")[0]
         hostname = hostname.lower()
 
         # Check if it's nvidia.com or a subdomain of nvidia.com
@@ -133,11 +163,7 @@ def is_ad_url(url: str) -> bool:
             "adclick=",
         ]
 
-        for pattern in ad_patterns:
-            if pattern in url_lower:
-                return True
-
-        return False
+        return any(pattern in url_lower for pattern in ad_patterns)
     except Exception as e:
         logger.debug(f"Error checking ad URL {url}: {e}")
         return False
@@ -147,13 +173,13 @@ def is_ad_url(url: str) -> bool:
 if custom_domains := os.getenv("MCP_NVIDIA_DOMAINS"):
     raw_domains = [d.strip() for d in custom_domains.split(",") if d.strip()]
     validated_domains = []
-    
+
     for domain in raw_domains:
         if validate_nvidia_domain(domain):
             validated_domains.append(domain)
         else:
             logger.warning(f"Skipping invalid domain (not nvidia.com): {domain}")
-    
+
     if validated_domains:
         DEFAULT_DOMAINS = validated_domains
         logger.info(f"Using custom domains from environment: {DEFAULT_DOMAINS}")
@@ -181,29 +207,23 @@ DOMAIN_CATEGORY_MAP = [
     # Forums (most specific first)
     ("forums.developer.nvidia.com", "forum"),
     ("forums.nvidia.com", "forum"),
-
     # Downloads
     ("developer.download.nvidia.com", "downloads"),
-
     # Documentation (specific subdomains first)
     ("nvidia.github.io", "documentation"),
     ("docs.api.nvidia.com", "documentation"),
     ("docs.omniverse.nvidia.com", "documentation"),
     ("gameworksdocs.nvidia.com", "documentation"),
     ("docs.nvidia.com", "documentation"),
-
     # Catalog
     ("catalog.ngc.nvidia.com", "catalog"),
     ("ngc.nvidia.com", "catalog"),
-
     # Resources
     ("resources.nvidia.com", "resources"),
-
     # Blog, News, Research
     ("blogs.nvidia.com", "blog"),
     ("nvidianews.nvidia.com", "news"),
     ("research.nvidia.com", "research"),
-
     # Build and Developer (broader matches last)
     ("build.nvidia.com", "build"),
     ("developer.nvidia.com", "developer"),
@@ -229,19 +249,201 @@ def extract_keywords(query: str) -> list[str]:
     keywords = []
     for word in words:
         # Remove common punctuation
-        cleaned = word.strip('.,!?;:()"\'')
+        cleaned = word.strip(".,!?;:()\"'")
 
         # Keep if:
         # - Not a stopword
         # - Length >= 2 characters
         # - Contains at least one letter (to avoid pure numbers/symbols unless they're tech terms)
-        if (cleaned and
-            cleaned not in STOPWORDS and
-            len(cleaned) >= 2 and
-            any(c.isalpha() for c in cleaned)):
+        if cleaned and cleaned not in STOPWORDS and len(cleaned) >= 2 and any(c.isalpha() for c in cleaned):
             keywords.append(cleaned)
 
     return keywords
+
+
+def calculate_fuzzy_match_score(keyword: str, text: str, threshold: int = 80) -> float:
+    """
+    Calculate fuzzy match score for a keyword in text.
+
+    Uses fuzzy matching to handle typos and variations.
+
+    Args:
+        keyword: Keyword to search for
+        text: Text to search in
+        threshold: Minimum similarity threshold (0-100)
+
+    Returns:
+        Float score 0.0-1.0 based on best fuzzy match
+    """
+    if keyword in text:
+        return 1.0  # Exact match
+
+    # Split text into words and find best fuzzy match
+    words = text.split()
+    best_score = 0
+
+    for word in words:
+        score = fuzz.ratio(keyword, word)
+        if score > best_score and score >= threshold:
+            best_score = score
+
+    # Normalize to 0-1 range
+    return best_score / 100.0 if best_score >= threshold else 0.0
+
+
+def extract_phrases(query: str) -> list[str]:
+    """
+    Extract multi-word phrases from query (2-3 word phrases).
+
+    Args:
+        query: Search query string
+
+    Returns:
+        List of phrases (2-3 words)
+    """
+    # Clean and split query
+    words = []
+    for word in query.lower().split():
+        # Remove punctuation
+        cleaned = word.strip(".,!?;:()\"'")
+        if cleaned:
+            words.append(cleaned)
+
+    phrases = []
+
+    # Extract 2-word phrases
+    for i in range(len(words) - 1):
+        # Skip if both words are stopwords
+        if words[i] not in STOPWORDS or words[i + 1] not in STOPWORDS:
+            phrase = f"{words[i]} {words[i + 1]}"
+            phrases.append(phrase)
+
+    # Extract 3-word phrases
+    for i in range(len(words) - 2):
+        # Include if at least one word is not a stopword
+        if any(w not in STOPWORDS for w in [words[i], words[i + 1], words[i + 2]]):
+            phrase = f"{words[i]} {words[i + 1]} {words[i + 2]}"
+            phrases.append(phrase)
+
+    return phrases
+
+
+def get_domain_boost(domain: str, query: str) -> float:
+    """
+    Calculate domain-specific boost based on query intent.
+
+    Technical queries get higher boost for docs domains.
+
+    Args:
+        domain: Domain name
+        query: Search query
+
+    Returns:
+        Boost multiplier (1.0 = no boost, >1.0 = boost)
+    """
+    domain_lower = domain.lower()
+    query_lower = query.lower()
+
+    # Technical indicator keywords
+    technical_keywords = [
+        "api",
+        "sdk",
+        "documentation",
+        "guide",
+        "tutorial",
+        "install",
+        "setup",
+        "configuration",
+        "code",
+        "programming",
+        "develop",
+        "cuda",
+        "tensorrt",
+        "triton",
+        "nccl",
+        "cutlass",
+    ]
+
+    is_technical_query = any(kw in query_lower for kw in technical_keywords)
+
+    # Boost documentation domains for technical queries
+    if is_technical_query:
+        if "docs." in domain_lower or "documentation" in domain_lower:
+            return 1.3
+        if "developer." in domain_lower:
+            return 1.2
+        if "github.io" in domain_lower:
+            return 1.15
+
+    # Boost research domain for research queries
+    if (
+        any(kw in query_lower for kw in ["research", "paper", "publication", "whitepaper"])
+        and "research." in domain_lower
+    ):
+        return 1.25
+
+    # Boost blog/news for announcement queries
+    if any(kw in query_lower for kw in ["announce", "release", "news", "launch"]) and (
+        "blog" in domain_lower or "news" in domain_lower
+    ):
+        return 1.2
+
+    return 1.0  # No boost
+
+
+def calculate_tfidf_scores(results: list[dict[str, Any]], query: str) -> list[float]:
+    """
+    Calculate TF-IDF based relevance scores for search results.
+
+    Args:
+        results: List of search result dictionaries
+        query: Search query string
+
+    Returns:
+        List of TF-IDF scores (0-1) for each result
+    """
+    if not results:
+        return []
+
+    # Build corpus from results (combine title + snippet)
+    corpus = []
+    for result in results:
+        title = result.get("title", "")
+        snippet = result.get("snippet_plain", result.get("snippet", ""))
+        # Remove markdown formatting
+        snippet = snippet.replace("**", "")
+        doc = f"{title} {snippet}"
+        corpus.append(doc)
+
+    # Add query as first document for comparison
+    corpus = [query, *corpus]
+
+    try:
+        # Create TF-IDF vectorizer
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words=list(STOPWORDS),
+            ngram_range=(1, 2),  # Unigrams and bigrams
+            max_features=1000,
+        )
+
+        # Fit and transform
+        tfidf_matrix = vectorizer.fit_transform(corpus)
+
+        # Calculate cosine similarity between query and each result
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        query_vector = tfidf_matrix[0:1]
+        result_vectors = tfidf_matrix[1:]
+
+        similarities = cosine_similarity(query_vector, result_vectors)[0]
+
+        return similarities.tolist()
+
+    except Exception as e:
+        logger.debug(f"TF-IDF calculation failed: {e}")
+        # Return neutral scores on failure
+        return [0.5] * len(results)
 
 
 def get_domain_category(domain: str) -> str:
@@ -297,9 +499,9 @@ def build_search_response_json(
     query: str,
     domains_searched: int,
     search_time_ms: int,
-    errors: list[dict[str, Any]] = None,
-    warnings: list[dict[str, Any]] = None,
-    debug_info: dict[str, Any] = None
+    errors: list[dict[str, Any]] | None = None,
+    warnings: list[dict[str, Any]] | None = None,
+    debug_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build structured JSON response for search_nvidia tool.
@@ -334,32 +536,36 @@ def build_search_response_json(
         # Build formatted_text for this result (per-result markdown)
         formatted_text = f"**{title}**\n{snippet}\n🔗 {url}\n📍 {domain}"
 
-        structured_results.append({
-            "id": i,
-            "title": title,
-            "url": url,
-            "snippet": snippet,
-            "snippet_plain": snippet_plain,
-            "domain": domain,
-            "domain_category": get_domain_category(domain),
-            "relevance_score": relevance_score,
-            "matched_keywords": extract_matched_keywords(query, result),
-            "metadata": {},
-            "formatted_text": formatted_text
-        })
+        structured_results.append(
+            {
+                "id": i,
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "snippet_plain": snippet_plain,
+                "domain": domain,
+                "domain_category": get_domain_category(domain),
+                "relevance_score": relevance_score,
+                "matched_keywords": extract_matched_keywords(query, result),
+                "metadata": {},
+                "formatted_text": formatted_text,
+            }
+        )
 
     # Build citations
     citations = []
     for i, result in enumerate(results, 1):
-        citations.append({
-            "number": i,
-            "url": result.get("url", ""),
-            "title": result.get("title", "Untitled"),
-            "domain": result.get("domain", "")
-        })
+        citations.append(
+            {
+                "number": i,
+                "url": result.get("url", ""),
+                "title": result.get("title", "Untitled"),
+                "domain": result.get("domain", ""),
+            }
+        )
 
     # Count domains with results
-    domains_with_results = len(set(r.get("domain", "") for r in results if r.get("domain")))
+    domains_with_results = len({r.get("domain", "") for r in results if r.get("domain")})
 
     # Build summary
     summary = {
@@ -367,7 +573,7 @@ def build_search_response_json(
         "total_results": len(results),
         "domains_searched": domains_searched,
         "domains_with_results": domains_with_results,
-        "search_time_ms": search_time_ms
+        "search_time_ms": search_time_ms,
     }
 
     # Add debug info if provided
@@ -380,7 +586,7 @@ def build_search_response_json(
         "results": structured_results,
         "citations": citations,
         "warnings": warnings,
-        "errors": errors
+        "errors": errors,
     }
 
 
@@ -389,9 +595,9 @@ def build_content_response_json(
     content_type: str,
     topic: str,
     search_time_ms: int,
-    errors: list[dict[str, Any]] = None,
-    warnings: list[dict[str, Any]] = None,
-    debug_info: dict[str, Any] = None
+    errors: list[dict[str, Any]] | None = None,
+    warnings: list[dict[str, Any]] | None = None,
+    debug_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build structured JSON response for discover_nvidia_content tool.
@@ -427,47 +633,47 @@ def build_content_response_json(
         formatted_text = f"**{title}** (Score: {relevance_score}/100)\n{snippet}\n🔗 {url}\n📍 {domain}"
 
         # Add content type emoji
-        type_emoji = {
-            "video": "🎥",
-            "course": "📚",
-            "tutorial": "📖",
-            "webinar": "🎤",
-            "blog": "📝"
-        }.get(content_type.lower(), "📄")
+        type_emoji = {"video": "🎥", "course": "📚", "tutorial": "📖", "webinar": "🎤", "blog": "📝"}.get(
+            content_type.lower(), "📄"
+        )
 
         formatted_text += f"\n{type_emoji} {content_type.title()}"
 
-        structured_content.append({
-            "id": i,
-            "title": title,
-            "url": url,
-            "content_type": content_type.lower(),
-            "snippet": snippet,
-            "snippet_plain": snippet_plain,
-            "relevance_score": relevance_score,
-            "domain": domain,
-            "domain_category": get_domain_category(domain),
-            "matched_keywords": extract_matched_keywords(topic, result),
-            "metadata": {},
-            "formatted_text": formatted_text
-        })
+        structured_content.append(
+            {
+                "id": i,
+                "title": title,
+                "url": url,
+                "content_type": content_type.lower(),
+                "snippet": snippet,
+                "snippet_plain": snippet_plain,
+                "relevance_score": relevance_score,
+                "domain": domain,
+                "domain_category": get_domain_category(domain),
+                "matched_keywords": extract_matched_keywords(topic, result),
+                "metadata": {},
+                "formatted_text": formatted_text,
+            }
+        )
 
     # Build resource links
     resource_links = []
     for i, result in enumerate(results, 1):
-        resource_links.append({
-            "number": i,
-            "url": result.get("url", ""),
-            "title": result.get("title", "Untitled"),
-            "type": content_type.lower()
-        })
+        resource_links.append(
+            {
+                "number": i,
+                "url": result.get("url", ""),
+                "title": result.get("title", "Untitled"),
+                "type": content_type.lower(),
+            }
+        )
 
     # Build summary
     summary = {
         "content_type": content_type.lower(),
         "topic": topic,
         "total_found": len(results),
-        "search_time_ms": search_time_ms
+        "search_time_ms": search_time_ms,
     }
 
     # Add debug info if provided
@@ -480,14 +686,12 @@ def build_content_response_json(
         "content": structured_content,
         "resource_links": resource_links,
         "warnings": warnings,
-        "errors": errors
+        "errors": errors,
     }
 
 
 def build_error_response_json(
-    error_code: str,
-    error_message: str,
-    details: dict[str, Any] = None
+    error_code: str, error_message: str, details: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """
     Build uniform error response structure.
@@ -500,13 +704,7 @@ def build_error_response_json(
     Returns:
         Structured error response
     """
-    error_response = {
-        "success": False,
-        "error": {
-            "code": error_code,
-            "message": error_message
-        }
-    }
+    error_response = {"success": False, "error": {"code": error_code, "message": error_message}}
 
     if details:
         error_response["error"]["details"] = details
@@ -527,7 +725,7 @@ def build_tool_result(response: dict[str, Any]) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(response, indent=2))],
         structuredContent=response,
-        isError=not response.get("success", False)
+        isError=not response.get("success", False),
     )
 
 
@@ -535,41 +733,36 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
     """Format search results into a readable string with citations."""
     if not results:
         return f"No results found for query: {query}"
-    
+
     output = [f"Search results for: {query}\n"]
     output.append("=" * 60)
-    
+
     # Format main results
     for i, result in enumerate(results, 1):
         score = result.get("relevance_score", 0)
 
         output.append(f"\n{i}. {result.get('title', 'Untitled')} (Score: {score}/100)")
-        if url := result.get('url'):
+        if url := result.get("url"):
             output.append(f"   URL: {url}")
-        if snippet := result.get('snippet'):
+        if snippet := result.get("snippet"):
             output.append(f"   {snippet}")
-        if domain := result.get('domain'):
+        if domain := result.get("domain"):
             output.append(f"   Source: {domain}")
-    
+
     # Add citations section for easy reference
     output.append("\n" + "=" * 60)
     output.append("\nCITATIONS:")
     output.append("-" * 60)
     for i, result in enumerate(results, 1):
-        if url := result.get('url'):
-            title = result.get('title', 'Untitled')
+        if url := result.get("url"):
+            title = result.get("title", "Untitled")
             output.append(f"[{i}] {title}")
             output.append(f"    {url}")
-    
+
     return "\n".join(output)
 
 
-async def fetch_url_context(
-    client: httpx.AsyncClient,
-    url: str,
-    snippet: str,
-    context_chars: int = 200
-) -> str:
+async def fetch_url_context(client: httpx.AsyncClient, url: str, snippet: str, context_chars: int = 200) -> str:
     """
     Fetch the webpage and extract surrounding context for the snippet.
 
@@ -590,7 +783,7 @@ async def fetch_url_context(
 
         # SECURITY: Validate URL scheme (only allow https)
         parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https'):
+        if parsed.scheme not in ("http", "https"):
             logger.warning(f"Skipping fetch for non-HTTP(S) URL: {url}")
             return snippet
 
@@ -598,58 +791,55 @@ async def fetch_url_context(
         response = await client.get(url, timeout=10.0, follow_redirects=False)
         if response.status_code != 200:
             return snippet
-        
+
         # Parse HTML to get text content
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
+        soup = BeautifulSoup(response.text, "html.parser")
+
         # Remove script and style elements
         for script in soup(["script", "style"]):
             script.decompose()
-        
+
         # Get text content
         text = soup.get_text()
-        
+
         # Clean up whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        
+        text = re.sub(r"\s+", " ", text).strip()
+
         # Try to find the snippet or similar text in the page
-        snippet_clean = re.sub(r'\s+', ' ', snippet).strip().lower()
+        snippet_clean = re.sub(r"\s+", " ", snippet).strip().lower()
         text_lower = text.lower()
-        
+
         # Find position of snippet in text
         pos = text_lower.find(snippet_clean[:50])  # Use first 50 chars for matching
-        
+
         if pos != -1:
             # Extract context around the snippet
             start = max(0, pos - context_chars)
             end = min(len(text), pos + len(snippet) + context_chars)
-            
+
             context = text[start:end]
-            
+
             # Add ellipsis if truncated
             if start > 0:
                 context = "..." + context
             if end < len(text):
                 context = context + "..."
-            
+
             # Highlight the snippet portion
             snippet_start = context.lower().find(snippet_clean[:30])
             if snippet_start != -1:
                 snippet_end = snippet_start + len(snippet)
-                highlighted = (
-                    context[:snippet_start] +
-                    "**" + context[snippet_start:snippet_end] + "**" +
-                    context[snippet_end:]
+                return (
+                    context[:snippet_start] + "**" + context[snippet_start:snippet_end] + "**" + context[snippet_end:]
                 )
-                return highlighted
-            
+
             return context
-        
+
         # If snippet not found, return original
         return snippet
-        
+
     except Exception as e:
-        logger.debug(f"Error fetching context from {url}: {str(e)}")
+        logger.debug(f"Error fetching context from {url}: {e!s}")
         return snippet
 
 
@@ -666,10 +856,8 @@ def _fetch_ddgs_results_sync(search_query: str, max_results: int) -> list[dict[s
     Returns:
         List of raw search results from DDGS
     """
-    search_results = []
     with DDGS() as ddgs:
-        search_results = list(ddgs.text(search_query, max_results=max_results))
-    return search_results
+        return list(ddgs.text(search_query, max_results=max_results))
 
 
 async def _fetch_ddgs_results(search_query: str, max_results: int) -> list[dict[str, Any]]:
@@ -706,15 +894,12 @@ async def _fetch_ddgs_results(search_query: str, max_results: int) -> list[dict[
     try:
         return await asyncio.to_thread(_fetch_ddgs_results_sync, search_query, max_results)
     except Exception as e:
-        logger.error(f"DDGS search failed: {e}")
+        logger.exception(f"DDGS search failed: {e}")
         raise
 
 
 async def search_nvidia_domain(
-    client: httpx.AsyncClient,
-    domain: str,
-    query: str,
-    max_results: int = 5
+    client: httpx.AsyncClient, domain: str, query: str, max_results: int = 5
 ) -> list[dict[str, Any]]:
     """
     Search a specific NVIDIA domain using ddgs package.
@@ -732,7 +917,7 @@ async def search_nvidia_domain(
 
     try:
         # Clean domain for site: operator
-        clean_domain = domain.replace('https://', '').replace('http://', '').rstrip('/')
+        clean_domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
 
         # Use ddgs package with site: operator for domain-specific search
         search_query = f"site:{clean_domain} {query}"
@@ -743,9 +928,9 @@ async def search_nvidia_domain(
         # Process each result and fetch enhanced context
         for result in search_results:
             try:
-                title = result.get('title', '')
-                url = result.get('href', '')
-                snippet = result.get('body', '')
+                title = result.get("title", "")
+                url = result.get("href", "")
+                snippet = result.get("body", "")
 
                 if not title or not url:
                     continue
@@ -766,43 +951,52 @@ async def search_nvidia_domain(
                 # Create plain version without bold markers
                 snippet_plain = enhanced_snippet.replace("**", "")
 
-                results.append({
-                    "title": title,
-                    "url": url,
-                    "snippet": enhanced_snippet,
-                    "snippet_plain": snippet_plain,
-                    "domain": clean_domain
-                })
+                results.append(
+                    {
+                        "title": title,
+                        "url": url,
+                        "snippet": enhanced_snippet,
+                        "snippet_plain": snippet_plain,
+                        "domain": clean_domain,
+                    }
+                )
 
             except Exception as e:
-                logger.debug(f"Error processing result item: {str(e)}")
+                logger.debug(f"Error processing result item: {e!s}")
                 continue
 
     except Exception as e:
-        logger.exception(f"Error searching {domain}: {str(e)}")
+        logger.exception(f"Error searching {domain}: {e!s}")
         # Add fallback message if search completely fails
-        error_msg = f"Search temporarily unavailable. Error: {str(e)}"
-        results.append({
-            "title": f"Search error for '{query}' on {clean_domain}",
-            "url": f"https://{clean_domain}",
-            "snippet": error_msg,
-            "snippet_plain": error_msg,
-            "domain": clean_domain
-        })
+        error_msg = f"Search temporarily unavailable. Error: {e!s}"
+        results.append(
+            {
+                "title": f"Search error on {clean_domain}",
+                "url": f"https://{clean_domain}",
+                "snippet": error_msg,
+                "snippet_plain": error_msg,
+                "domain": clean_domain,
+                "is_error": True,  # Mark as error result to prevent inflated relevance scores
+            }
+        )
 
     return results
 
 
-def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
+def calculate_search_relevance(result: dict[str, Any], query: str, domain_boost: float = 1.0) -> int:
     """
-    Calculate relevance score for a search result based on keyword matches.
+    Calculate relevance score for a search result using multiple signals.
 
-    Uses only meaningful keywords (non-stopwords) from the query.
-    Weighs title matches higher than snippet, and snippet higher than URL.
+    Uses:
+    - Exact keyword matching
+    - Fuzzy keyword matching (handles typos)
+    - Phrase matching (multi-word phrases)
+    - Domain-specific boosting
 
     Args:
         result: Search result dictionary
         query: Search query string
+        domain_boost: Domain boost multiplier (default 1.0)
 
     Returns:
         Relevance score from 0-100
@@ -813,12 +1007,13 @@ def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
 
     # Extract meaningful keywords only (no stopwords)
     keywords = extract_keywords(query)
+    phrases = extract_phrases(query)
 
     if not keywords:
         return 0
 
-    # Calculate raw score based on keyword matches
-    raw_score = 0
+    # === Part 1: Exact keyword matching (base score) ===
+    base_score = 0
     max_score_per_keyword = 6  # 3 + 2 + 1
 
     for keyword in keywords:
@@ -836,20 +1031,49 @@ def calculate_search_relevance(result: dict[str, Any], query: str) -> int:
         if keyword in url:
             keyword_score += 1
 
-        raw_score += keyword_score
+        base_score += keyword_score
+
+    # === Part 2: Fuzzy keyword matching (bonus points) ===
+    fuzzy_bonus = 0
+    for keyword in keywords:
+        # Only apply fuzzy if no exact match
+        if keyword not in title and keyword not in snippet:
+            title_fuzzy = calculate_fuzzy_match_score(keyword, title, threshold=80)
+            snippet_fuzzy = calculate_fuzzy_match_score(keyword, snippet, threshold=80)
+
+            # Award partial points for fuzzy matches
+            fuzzy_bonus += title_fuzzy * 1.5  # Up to 1.5 points for title fuzzy
+            fuzzy_bonus += snippet_fuzzy * 1.0  # Up to 1.0 points for snippet fuzzy
+
+    # === Part 3: Phrase matching (bonus points) ===
+    phrase_bonus = 0
+    for phrase in phrases:
+        if phrase in title:
+            phrase_bonus += 2.0  # Bonus for phrase in title
+        elif phrase in snippet:
+            phrase_bonus += 1.0  # Bonus for phrase in snippet
+
+    # === Part 4: Combine scores ===
+    raw_score = base_score + fuzzy_bonus + phrase_bonus
+
+    # Max possible: keywords * 6 + fuzzy bonus (2.5 per keyword) + phrase bonus (2 per phrase)
+    max_possible_score = (len(keywords) * max_score_per_keyword) + (len(keywords) * 2.5) + (len(phrases) * 2.0)
 
     # Normalize to 0-100 scale
-    max_possible_score = len(keywords) * max_score_per_keyword
-    normalized_score = int((raw_score / max_possible_score) * 100) if max_possible_score > 0 else 0
+    normalized_score = int(raw_score / max_possible_score * 100) if max_possible_score > 0 else 0
 
-    return normalized_score
+    # Apply domain boost
+    boosted_score = int(normalized_score * domain_boost)
+
+    # Cap at 100
+    return min(boosted_score, 100)
 
 
 async def search_all_domains(
     query: str,
     domains: list[str] | None = None,
     max_results_per_domain: int = 3,
-    min_relevance_score: int = 33,
+    min_relevance_score: int = 17,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
     Search across all NVIDIA domains.
@@ -858,7 +1082,7 @@ async def search_all_domains(
         query: Search query
         domains: List of domains to search (uses DEFAULT_DOMAINS if None)
         max_results_per_domain: Maximum results per domain
-        min_relevance_score: Minimum relevance score threshold (0-100, default 50)
+        min_relevance_score: Minimum relevance score threshold (0-100, default 17)
 
     Returns:
         Tuple of (results, errors, warnings, timing_info)
@@ -875,45 +1099,80 @@ async def search_all_domains(
 
     start_time = time.time()
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         # Search all domains concurrently with timing
         domain_start_times = {domain: time.time() for domain in domains}
 
-        tasks = [
-            search_nvidia_domain(client, domain, query, max_results_per_domain)
-            for domain in domains
-        ]
+        tasks = [search_nvidia_domain(client, domain, query, max_results_per_domain) for domain in domains]
 
         domain_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for domain, results in zip(domains, domain_results):
+        for domain, results in zip(domains, domain_results, strict=False):
             # Calculate timing for this domain
             domain_time_ms = int((time.time() - domain_start_times[domain]) * 1000)
-            clean_domain = domain.replace('https://', '').replace('http://', '').rstrip('/')
+            clean_domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
             timing_info[clean_domain] = domain_time_ms
 
             if isinstance(results, Exception):
                 error_msg = str(results)
                 logger.error(f"Domain search failed for {domain}: {error_msg}")
-                errors.append({
-                    "domain": clean_domain,
-                    "code": "SEARCH_FAILED",
-                    "message": error_msg
-                })
-                warnings.append({
-                    "code": "PARTIAL_FAILURE",
-                    "message": f"Search failed for domain: {clean_domain}",
-                    "affected_domains": [clean_domain]
-                })
+                errors.append({"domain": clean_domain, "code": "SEARCH_FAILED", "message": error_msg})
+                warnings.append(
+                    {
+                        "code": "PARTIAL_FAILURE",
+                        "message": f"Search failed for domain: {clean_domain}",
+                        "affected_domains": [clean_domain],
+                    }
+                )
                 continue
 
             all_results.extend(results)
 
     total_time_ms = int((time.time() - start_time) * 1000)
 
-    # Calculate relevance scores for all results
-    for result in all_results:
-        result["relevance_score"] = calculate_search_relevance(result, query)
+    # Calculate TF-IDF scores for all results
+    logger.debug("Calculating TF-IDF scores...")
+    tfidf_scores = calculate_tfidf_scores(all_results, query)
+
+    # Calculate relevance scores with domain boosts and TF-IDF
+    for i, result in enumerate(all_results):
+        # Error results get a score of 0 to prevent query text in error message from inflating scores
+        if result.get("is_error", False):
+            result["relevance_score"] = 0
+            if logger.isEnabledFor(logging.DEBUG):
+                result["_debug_scores"] = {
+                    "keyword_score": 0,
+                    "tfidf_score": 0,
+                    "domain_boost": 0,
+                    "combined_score": 0,
+                    "reason": "error_result",
+                }
+            continue
+
+        domain = result.get("domain", "")
+
+        # Get domain-specific boost
+        domain_boost = get_domain_boost(domain, query)
+
+        # Calculate keyword-based score with fuzzy matching and phrase matching
+        keyword_score = calculate_search_relevance(result, query, domain_boost)
+
+        # Get TF-IDF score
+        tfidf_score = tfidf_scores[i] if i < len(tfidf_scores) else 0.5
+
+        # Combine scores: 70% keyword-based + 30% TF-IDF
+        combined_score = int(keyword_score * 0.7 + tfidf_score * 100 * 0.3)
+
+        result["relevance_score"] = min(combined_score, 100)
+
+        # Store component scores for debugging
+        if logger.isEnabledFor(logging.DEBUG):
+            result["_debug_scores"] = {
+                "keyword_score": keyword_score,
+                "tfidf_score": int(tfidf_score * 100),
+                "domain_boost": domain_boost,
+                "combined_score": combined_score,
+            }
 
     # Filter by minimum relevance score
     filtered_results = [r for r in all_results if r.get("relevance_score", 0) >= min_relevance_score]
@@ -924,19 +1183,16 @@ async def search_all_domains(
     # Build debug info if debug logging is enabled
     debug_info = None
     if logger.isEnabledFor(logging.DEBUG):
-        search_strategies = [f"site:{domain.replace('https://', '').replace('http://', '').rstrip('/')} {query}" for domain in domains]
-        debug_info = {
-            "search_strategies": search_strategies,
-            "timing_breakdown": timing_info
-        }
+        search_strategies = [
+            f"site:{domain.replace('https://', '').replace('http://', '').rstrip('/')} {query}" for domain in domains
+        ]
+        debug_info = {"search_strategies": search_strategies, "timing_breakdown": timing_info}
 
     return filtered_results, errors, warnings, {"total_time_ms": total_time_ms, "debug_info": debug_info}
 
 
 async def discover_content(
-    content_type: str,
-    topic: str,
-    max_results: int = 5
+    content_type: str, topic: str, max_results: int = 5
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
     Discover specific types of NVIDIA content (videos, courses, tutorials, etc.).
@@ -954,43 +1210,39 @@ async def discover_content(
         "video": {
             "query": f"{topic} video OR tutorial",
             "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
-            "keywords": ["youtube", "video", "watch", "tutorial"]
+            "keywords": ["youtube", "video", "watch", "tutorial"],
         },
         "course": {
             "query": f"{topic} course OR training OR certification",
             "domains": ["https://developer.nvidia.com/"],
-            "keywords": ["course", "training", "dli", "certification", "learn"]
+            "keywords": ["course", "training", "dli", "certification", "learn"],
         },
         "tutorial": {
             "query": f"{topic} tutorial OR guide OR how-to",
             "domains": ["https://developer.nvidia.com/", "https://docs.nvidia.com/"],
-            "keywords": ["tutorial", "guide", "how-to", "getting started"]
+            "keywords": ["tutorial", "guide", "how-to", "getting started"],
         },
         "webinar": {
             "query": f"{topic} webinar OR event OR session",
             "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
-            "keywords": ["webinar", "event", "session", "livestream"]
+            "keywords": ["webinar", "event", "session", "livestream"],
         },
         "blog": {
             "query": f"{topic}",
             "domains": ["https://blogs.nvidia.com/"],
-            "keywords": ["blog", "article", "post"]
-        }
+            "keywords": ["blog", "article", "post"],
+        },
     }
 
-    strategy = content_strategies.get(content_type.lower(), {
-        "query": f"{topic} {content_type}",
-        "domains": DEFAULT_DOMAINS,
-        "keywords": []
-    })
+    strategy = content_strategies.get(
+        content_type.lower(), {"query": f"{topic} {content_type}", "domains": DEFAULT_DOMAINS, "keywords": []}
+    )
 
     # Search using the strategy
     results, errors, warnings, timing_info = await search_all_domains(
-        query=strategy["query"],
-        domains=strategy.get("domains"),
-        max_results_per_domain=max_results
+        query=strategy["query"], domains=strategy.get("domains"), max_results_per_domain=max_results
     )
-    
+
     # Filter and rank results based on content type keywords
     filtered_results = []
     content_keywords = strategy.get("keywords", [])
@@ -1042,30 +1294,30 @@ def format_content_results(results: list[dict[str, Any]], content_type: str, top
     """Format content discovery results."""
     if not results:
         return f"No {content_type} content found for topic: {topic}"
-    
+
     output = [f"Recommended {content_type.upper()} content for: {topic}\n"]
     output.append("=" * 60)
-    
+
     for i, result in enumerate(results, 1):
         score = result.get("relevance_score", 0)
         output.append(f"\n{i}. {result.get('title', 'Untitled')} (Score: {score}/100)")
-        if url := result.get('url'):
+        if url := result.get("url"):
             output.append(f"   URL: {url}")
-        if snippet := result.get('snippet'):
+        if snippet := result.get("snippet"):
             output.append(f"   {snippet}")
-        if domain := result.get('domain'):
+        if domain := result.get("domain"):
             output.append(f"   Source: {domain}")
-    
+
     # Add citations
     output.append("\n" + "=" * 60)
     output.append("\nRESOURCE LINKS:")
     output.append("-" * 60)
     for i, result in enumerate(results, 1):
-        if url := result.get('url'):
-            title = result.get('title', 'Untitled')
+        if url := result.get("url"):
+            title = result.get("title", "Untitled")
             output.append(f"[{i}] {title}")
             output.append(f"    {url}")
-    
+
     return "\n".join(output)
 
 
@@ -1087,7 +1339,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query to find information across NVIDIA domains"
+                        "description": "The search query to find information across NVIDIA domains",
                     },
                     "domains": {
                         "type": "array",
@@ -1095,30 +1347,27 @@ async def list_tools() -> list[Tool]:
                         "description": (
                             "Optional list of specific NVIDIA domains to search. "
                             "If not provided, searches all default domains."
-                        )
+                        ),
                     },
                     "max_results_per_domain": {
                         "type": "integer",
                         "description": "Maximum number of results to return per domain (default: 3)",
-                        "default": 3
+                        "default": 3,
                     },
                     "min_relevance_score": {
                         "type": "integer",
-                        "description": "Minimum relevance score threshold (0-100) to filter results (default: 33)",
-                        "default": 33,
+                        "description": "Minimum relevance score threshold (0-100) to filter results (default: 17)",
+                        "default": 17,
                         "minimum": 0,
-                        "maximum": 100
-                    }
+                        "maximum": 100,
+                    },
                 },
-                "required": ["query"]
+                "required": ["query"],
             },
             outputSchema={
                 "type": "object",
                 "properties": {
-                    "success": {
-                        "type": "boolean",
-                        "description": "Whether the operation was successful"
-                    },
+                    "success": {"type": "boolean", "description": "Whether the operation was successful"},
                     "summary": {
                         "type": "object",
                         "properties": {
@@ -1131,11 +1380,17 @@ async def list_tools() -> list[Tool]:
                                 "type": "object",
                                 "properties": {
                                     "search_strategies": {"type": "array", "items": {"type": "string"}},
-                                    "timing_breakdown": {"type": "object"}
-                                }
-                            }
+                                    "timing_breakdown": {"type": "object"},
+                                },
+                            },
                         },
-                        "required": ["query", "total_results", "domains_searched", "domains_with_results", "search_time_ms"]
+                        "required": [
+                            "query",
+                            "total_results",
+                            "domains_searched",
+                            "domains_with_results",
+                            "search_time_ms",
+                        ],
                     },
                     "results": {
                         "type": "array",
@@ -1146,16 +1401,49 @@ async def list_tools() -> list[Tool]:
                                 "title": {"type": "string"},
                                 "url": {"type": "string"},
                                 "snippet": {"type": "string", "description": "Snippet with **bold** highlighting"},
-                                "snippet_plain": {"type": "string", "description": "Plain text snippet without formatting"},
+                                "snippet_plain": {
+                                    "type": "string",
+                                    "description": "Plain text snippet without formatting",
+                                },
                                 "domain": {"type": "string"},
-                                "domain_category": {"type": "string", "enum": ["documentation", "blog", "news", "developer", "build", "research", "catalog", "forum", "downloads", "resources", "other"]},
+                                "domain_category": {
+                                    "type": "string",
+                                    "enum": [
+                                        "documentation",
+                                        "blog",
+                                        "news",
+                                        "developer",
+                                        "build",
+                                        "research",
+                                        "catalog",
+                                        "forum",
+                                        "downloads",
+                                        "resources",
+                                        "other",
+                                    ],
+                                },
                                 "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
                                 "matched_keywords": {"type": "array", "items": {"type": "string"}},
                                 "metadata": {"type": "object"},
-                                "formatted_text": {"type": "string", "description": "Markdown-formatted text for direct use"}
+                                "formatted_text": {
+                                    "type": "string",
+                                    "description": "Markdown-formatted text for direct use",
+                                },
                             },
-                            "required": ["id", "title", "url", "snippet", "snippet_plain", "domain", "domain_category", "relevance_score", "matched_keywords", "metadata", "formatted_text"]
-                        }
+                            "required": [
+                                "id",
+                                "title",
+                                "url",
+                                "snippet",
+                                "snippet_plain",
+                                "domain",
+                                "domain_category",
+                                "relevance_score",
+                                "matched_keywords",
+                                "metadata",
+                                "formatted_text",
+                            ],
+                        },
                     },
                     "citations": {
                         "type": "array",
@@ -1165,10 +1453,10 @@ async def list_tools() -> list[Tool]:
                                 "number": {"type": "integer"},
                                 "url": {"type": "string"},
                                 "title": {"type": "string"},
-                                "domain": {"type": "string"}
+                                "domain": {"type": "string"},
                             },
-                            "required": ["number", "url", "title", "domain"]
-                        }
+                            "required": ["number", "url", "title", "domain"],
+                        },
                     },
                     "warnings": {
                         "type": "array",
@@ -1177,10 +1465,10 @@ async def list_tools() -> list[Tool]:
                             "properties": {
                                 "code": {"type": "string"},
                                 "message": {"type": "string"},
-                                "affected_domains": {"type": "array", "items": {"type": "string"}}
+                                "affected_domains": {"type": "array", "items": {"type": "string"}},
                             },
-                            "required": ["code", "message"]
-                        }
+                            "required": ["code", "message"],
+                        },
                     },
                     "errors": {
                         "type": "array",
@@ -1189,14 +1477,14 @@ async def list_tools() -> list[Tool]:
                             "properties": {
                                 "domain": {"type": "string"},
                                 "code": {"type": "string"},
-                                "message": {"type": "string"}
+                                "message": {"type": "string"},
                             },
-                            "required": ["code", "message"]
-                        }
-                    }
+                            "required": ["code", "message"],
+                        },
+                    },
                 },
-                "required": ["success", "summary", "results", "citations", "warnings", "errors"]
-            }
+                "required": ["success", "summary", "results", "citations", "warnings", "errors"],
+            },
         ),
         Tool(
             name="discover_nvidia_content",
@@ -1219,27 +1507,24 @@ async def list_tools() -> list[Tool]:
                             "'tutorial' for step-by-step guides, "
                             "'webinar' for webinars and live sessions, "
                             "'blog' for blog posts and articles"
-                        )
+                        ),
                     },
                     "topic": {
                         "type": "string",
-                        "description": "The topic or technology to find content about (e.g., 'CUDA', 'Omniverse', 'AI')"
+                        "description": "The topic or technology to find content about (e.g., 'CUDA', 'Omniverse', 'AI')",
                     },
                     "max_results": {
                         "type": "integer",
                         "description": "Maximum number of content items to return (default: 5)",
-                        "default": 5
-                    }
+                        "default": 5,
+                    },
                 },
-                "required": ["content_type", "topic"]
+                "required": ["content_type", "topic"],
             },
             outputSchema={
                 "type": "object",
                 "properties": {
-                    "success": {
-                        "type": "boolean",
-                        "description": "Whether the operation was successful"
-                    },
+                    "success": {"type": "boolean", "description": "Whether the operation was successful"},
                     "summary": {
                         "type": "object",
                         "properties": {
@@ -1251,11 +1536,11 @@ async def list_tools() -> list[Tool]:
                                 "type": "object",
                                 "properties": {
                                     "search_strategies": {"type": "array", "items": {"type": "string"}},
-                                    "timing_breakdown": {"type": "object"}
-                                }
-                            }
+                                    "timing_breakdown": {"type": "object"},
+                                },
+                            },
                         },
-                        "required": ["content_type", "topic", "total_found", "search_time_ms"]
+                        "required": ["content_type", "topic", "total_found", "search_time_ms"],
                     },
                     "content": {
                         "type": "array",
@@ -1267,16 +1552,50 @@ async def list_tools() -> list[Tool]:
                                 "url": {"type": "string"},
                                 "content_type": {"type": "string"},
                                 "snippet": {"type": "string", "description": "Snippet with **bold** highlighting"},
-                                "snippet_plain": {"type": "string", "description": "Plain text snippet without formatting"},
+                                "snippet_plain": {
+                                    "type": "string",
+                                    "description": "Plain text snippet without formatting",
+                                },
                                 "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
                                 "domain": {"type": "string"},
-                                "domain_category": {"type": "string", "enum": ["documentation", "blog", "news", "developer", "build", "research", "catalog", "forum", "downloads", "resources", "other"]},
+                                "domain_category": {
+                                    "type": "string",
+                                    "enum": [
+                                        "documentation",
+                                        "blog",
+                                        "news",
+                                        "developer",
+                                        "build",
+                                        "research",
+                                        "catalog",
+                                        "forum",
+                                        "downloads",
+                                        "resources",
+                                        "other",
+                                    ],
+                                },
                                 "matched_keywords": {"type": "array", "items": {"type": "string"}},
                                 "metadata": {"type": "object"},
-                                "formatted_text": {"type": "string", "description": "Markdown-formatted text for direct use"}
+                                "formatted_text": {
+                                    "type": "string",
+                                    "description": "Markdown-formatted text for direct use",
+                                },
                             },
-                            "required": ["id", "title", "url", "content_type", "snippet", "snippet_plain", "relevance_score", "domain", "domain_category", "matched_keywords", "metadata", "formatted_text"]
-                        }
+                            "required": [
+                                "id",
+                                "title",
+                                "url",
+                                "content_type",
+                                "snippet",
+                                "snippet_plain",
+                                "relevance_score",
+                                "domain",
+                                "domain_category",
+                                "matched_keywords",
+                                "metadata",
+                                "formatted_text",
+                            ],
+                        },
                     },
                     "resource_links": {
                         "type": "array",
@@ -1286,10 +1605,10 @@ async def list_tools() -> list[Tool]:
                                 "number": {"type": "integer"},
                                 "url": {"type": "string"},
                                 "title": {"type": "string"},
-                                "type": {"type": "string"}
+                                "type": {"type": "string"},
                             },
-                            "required": ["number", "url", "title", "type"]
-                        }
+                            "required": ["number", "url", "title", "type"],
+                        },
                     },
                     "warnings": {
                         "type": "array",
@@ -1298,10 +1617,10 @@ async def list_tools() -> list[Tool]:
                             "properties": {
                                 "code": {"type": "string"},
                                 "message": {"type": "string"},
-                                "affected_domains": {"type": "array", "items": {"type": "string"}}
+                                "affected_domains": {"type": "array", "items": {"type": "string"}},
                             },
-                            "required": ["code", "message"]
-                        }
+                            "required": ["code", "message"],
+                        },
                     },
                     "errors": {
                         "type": "array",
@@ -1310,15 +1629,15 @@ async def list_tools() -> list[Tool]:
                             "properties": {
                                 "domain": {"type": "string"},
                                 "code": {"type": "string"},
-                                "message": {"type": "string"}
+                                "message": {"type": "string"},
                             },
-                            "required": ["code", "message"]
-                        }
-                    }
+                            "required": ["code", "message"],
+                        },
+                    },
                 },
-                "required": ["success", "summary", "content", "resource_links", "warnings", "errors"]
-            }
-        )
+                "required": ["success", "summary", "content", "resource_links", "warnings", "errors"],
+            },
+        ),
     ]
 
 
@@ -1331,17 +1650,13 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             async with _search_semaphore:
                 query = arguments.get("query")
                 if not query:
-                    error_response = build_error_response_json(
-                        "MISSING_PARAMETER",
-                        "Query parameter is required"
-                    )
+                    error_response = build_error_response_json("MISSING_PARAMETER", "Query parameter is required")
                     return build_tool_result(error_response)
 
                 # SECURITY: Validate query length
                 if len(query) > MAX_QUERY_LENGTH:
                     error_response = build_error_response_json(
-                        "INVALID_PARAMETER",
-                        f"Query too long. Maximum length: {MAX_QUERY_LENGTH} characters"
+                        "INVALID_PARAMETER", f"Query too long. Maximum length: {MAX_QUERY_LENGTH} characters"
                     )
                     return build_tool_result(error_response)
 
@@ -1350,7 +1665,9 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
                 # SECURITY: Limit max_results_per_domain to prevent resource exhaustion
                 if max_results_per_domain > MAX_RESULTS_PER_DOMAIN:
-                    logger.warning(f"max_results_per_domain limited from {max_results_per_domain} to {MAX_RESULTS_PER_DOMAIN}")
+                    logger.warning(
+                        f"max_results_per_domain limited from {max_results_per_domain} to {MAX_RESULTS_PER_DOMAIN}"
+                    )
                     max_results_per_domain = MAX_RESULTS_PER_DOMAIN
 
                 # Validate caller-supplied domains
@@ -1358,8 +1675,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                 if domains is not None:
                     if not isinstance(domains, list):
                         error_response = build_error_response_json(
-                            "INVALID_PARAMETER",
-                            "domains must be a list of strings"
+                            "INVALID_PARAMETER", "domains must be a list of strings"
                         )
                         return build_tool_result(error_response)
 
@@ -1369,8 +1685,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     for domain in domains:
                         if not isinstance(domain, str):
                             error_response = build_error_response_json(
-                                "INVALID_PARAMETER",
-                                f"Invalid domain type: {type(domain).__name__}. Expected string."
+                                "INVALID_PARAMETER", f"Invalid domain type: {type(domain).__name__}. Expected string."
                             )
                             return build_tool_result(error_response)
 
@@ -1387,22 +1702,19 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                         )
                         logger.warning(error_msg)
                         error_response = build_error_response_json(
-                            "INVALID_DOMAIN",
-                            error_msg,
-                            {"invalid_domains": invalid_domains}
+                            "INVALID_DOMAIN", error_msg, {"invalid_domains": invalid_domains}
                         )
                         return build_tool_result(error_response)
 
                     if not validated_domains:
                         error_response = build_error_response_json(
-                            "NO_VALID_DOMAINS",
-                            "No valid NVIDIA domains provided"
+                            "NO_VALID_DOMAINS", "No valid NVIDIA domains provided"
                         )
                         return build_tool_result(error_response)
 
                     logger.info(f"Validated {len(validated_domains)} caller-supplied domains")
 
-                min_relevance_score = arguments.get("min_relevance_score", 33)
+                min_relevance_score = arguments.get("min_relevance_score", 17)
 
                 logger.info(f"Searching NVIDIA domains for: {query}")
 
@@ -1411,7 +1723,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     query=query,
                     domains=validated_domains,
                     max_results_per_domain=max_results_per_domain,
-                    min_relevance_score=min_relevance_score
+                    min_relevance_score=min_relevance_score,
                 )
 
                 # Build JSON response
@@ -1422,7 +1734,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     search_time_ms=timing_info["total_time_ms"],
                     errors=errors,
                     warnings=warnings,
-                    debug_info=timing_info.get("debug_info", {})
+                    debug_info=timing_info.get("debug_info", {}),
                 )
 
                 return build_tool_result(response)
@@ -1435,16 +1747,14 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
                 if not content_type or not topic:
                     error_response = build_error_response_json(
-                        "MISSING_PARAMETER",
-                        "Both content_type and topic parameters are required"
+                        "MISSING_PARAMETER", "Both content_type and topic parameters are required"
                     )
                     return build_tool_result(error_response)
 
                 # SECURITY: Validate topic length (same as query validation)
                 if len(topic) > MAX_QUERY_LENGTH:
                     error_response = build_error_response_json(
-                        "INVALID_PARAMETER",
-                        f"Topic too long. Maximum length: {MAX_QUERY_LENGTH} characters"
+                        "INVALID_PARAMETER", f"Topic too long. Maximum length: {MAX_QUERY_LENGTH} characters"
                     )
                     return build_tool_result(error_response)
 
@@ -1459,9 +1769,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
                 # Get results with error tracking
                 results, errors, warnings, timing_info = await discover_content(
-                    content_type=content_type,
-                    topic=topic,
-                    max_results=max_results
+                    content_type=content_type, topic=topic, max_results=max_results
                 )
 
                 # Build JSON response
@@ -1472,16 +1780,13 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     search_time_ms=timing_info["total_time_ms"],
                     errors=errors,
                     warnings=warnings,
-                    debug_info=timing_info.get("debug_info", {})
+                    debug_info=timing_info.get("debug_info", {}),
                 )
 
                 return build_tool_result(response)
 
         else:
-            error_response = build_error_response_json(
-                "UNKNOWN_TOOL",
-                f"Unknown tool: {name}"
-            )
+            error_response = build_error_response_json("UNKNOWN_TOOL", f"Unknown tool: {name}")
             return build_tool_result(error_response)
 
     except Exception as e:
@@ -1489,7 +1794,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
         logger.exception(f"Unexpected error in tool call: {e}")
         error_response = build_error_response_json(
             "INTERNAL_ERROR",
-            "An unexpected error occurred while processing your request. Please try again or contact support if the issue persists."
+            "An unexpected error occurred while processing your request. Please try again or contact support if the issue persists.",
         )
         return build_tool_result(error_response)
 
@@ -1506,27 +1811,18 @@ async def run():
         shutdown_event.set()
 
     # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
 
     try:
         logger.info("MCP server ready and waiting for connections")
         async with stdio_server() as (read_stream, write_stream):
             # Run server in a task so we can cancel it on shutdown
-            server_task = asyncio.create_task(
-                app.run(
-                    read_stream,
-                    write_stream,
-                    app.create_initialization_options()
-                )
-            )
+            server_task = asyncio.create_task(app.run(read_stream, write_stream, app.create_initialization_options()))
 
             # Wait for either server completion or shutdown signal
             shutdown_task = asyncio.create_task(shutdown_event.wait())
-            _done, pending = await asyncio.wait(
-                [server_task, shutdown_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
+            _done, pending = await asyncio.wait([server_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED)
 
             # If shutdown was triggered, cancel the server
             if shutdown_event.is_set():
@@ -1540,10 +1836,8 @@ async def run():
             # Cancel any remaining tasks
             for task in pending:
                 task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
 
     except Exception as e:
         logger.exception(f"Unexpected error in server: {e}")
@@ -1553,17 +1847,70 @@ async def run():
 
 
 def main():
-    """Main entry point."""
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        # This shouldn't normally be reached due to signal handlers,
-        # but handle it gracefully just in case
-        logger.info("Received keyboard interrupt")
-        sys.exit(0)
-    except Exception as e:
-        logger.exception(f"Fatal error: {e}")
-        sys.exit(1)
+    """Main entry point with subcommands for different transports."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="MCP NVIDIA Server - Search NVIDIA domains via Model Context Protocol",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run in stdio mode (default, for Claude Desktop)
+  %(prog)s
+  %(prog)s stdio
+
+  # Run in HTTP/SSE mode (for remote access)
+  %(prog)s http
+  %(prog)s http --port 3000
+  %(prog)s http --host 0.0.0.0 --port 8080
+
+  # Enable debug logging
+  MCP_NVIDIA_LOG_LEVEL=DEBUG %(prog)s
+        """,
+    )
+
+    subparsers = parser.add_subparsers(dest="transport", help="Transport mode")
+
+    # stdio subcommand (default)
+    subparsers.add_parser("stdio", help="Run in stdio mode (default, for local MCP clients)")
+
+    # http subcommand
+    http_parser = subparsers.add_parser("http", help="Run in HTTP/SSE mode (for remote access)")
+
+    http_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0 for all interfaces)")  # nosec B104
+
+    http_parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
+
+    args = parser.parse_args()
+
+    # Default to stdio if no subcommand specified
+    if args.transport is None or args.transport == "stdio":
+        # Run in stdio mode
+        try:
+            asyncio.run(run())
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt")
+            sys.exit(0)
+        except Exception as e:
+            logger.exception(f"Fatal error: {e}")
+            sys.exit(1)
+
+    elif args.transport == "http":
+        # Run in HTTP mode
+        try:
+            from mcp_nvidia.http_server import run_http_server
+
+            run_http_server(host=args.host, port=args.port)
+        except ImportError as e:
+            logger.exception(f"HTTP server dependencies not available: {e}")
+            logger.exception("Install HTTP dependencies with: pip install mcp-nvidia")
+            sys.exit(1)
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt")
+            sys.exit(0)
+        except Exception as e:
+            logger.exception(f"Fatal error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

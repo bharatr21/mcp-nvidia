@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-01-XX
 
 ### Added
+
 - Initial release of MCP NVIDIA search server
 - **Two main tools**:
   - `search_nvidia`: Search across NVIDIA domains with relevance scoring
@@ -37,12 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - npx wrapper for easy installation (@bharatr21/mcp-nvidia)
 
 ### Dependencies
+
 - mcp >= 1.1.0 (for CallToolResult.structuredContent support)
 - httpx >= 0.28.0 (HTTP client)
 - beautifulsoup4 >= 4.14.0 (HTML parsing)
 - ddgs >= 9.0.0 (DuckDuckGo search)
 
 ### Security
+
 - No API keys or credentials required
 - All searches go through DuckDuckGo (no direct NVIDIA API access needed)
 - Domain validation prevents SSRF attacks
