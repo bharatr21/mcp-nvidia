@@ -23,6 +23,7 @@ def get_server_command():
     """Get the MCP server command path."""
     # Try installed version first
     import shutil
+
     installed_path = shutil.which("mcp-nvidia")
     if installed_path:
         return Path(installed_path)
@@ -42,15 +43,11 @@ class MCPTestSession:
     def __init__(self):
         self.server_script = get_server_command()
         if not self.server_script or not self.server_script.exists():
-            pytest.skip(f"MCP server not found. Install with: pip install -e .")
+            pytest.skip("MCP server not found. Install with: pip install -e .")
 
     async def __aenter__(self):
         """Create and initialize the MCP client session."""
-        server_params = StdioServerParameters(
-            command=str(self.server_script),
-            args=[],
-            env=None
-        )
+        server_params = StdioServerParameters(command=str(self.server_script), args=[], env=None)
 
         self._stdio_context = stdio_client(server_params)
         read, write = await self._stdio_context.__aenter__()
@@ -64,10 +61,10 @@ class MCPTestSession:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Clean up the MCP client session."""
         try:
-            if hasattr(self, '_session_context'):
+            if hasattr(self, "_session_context"):
                 await self._session_context.__aexit__(exc_type, exc_val, exc_tb)
         finally:
-            if hasattr(self, '_stdio_context'):
+            if hasattr(self, "_stdio_context"):
                 await self._stdio_context.__aexit__(exc_type, exc_val, exc_tb)
 
 
@@ -75,13 +72,7 @@ class MCPTestSession:
 async def test_structured_output():
     """Test that structured output is returned correctly."""
     async with MCPTestSession() as session:
-        result = await session.call_tool(
-            "search_nvidia",
-            arguments={
-                "query": "TensorRT",
-                "max_results_per_domain": 1
-            }
-        )
+        result = await session.call_tool("search_nvidia", arguments={"query": "TensorRT", "max_results_per_domain": 1})
 
         # Check that we have content
         assert result.content, "Response should have content"
@@ -90,14 +81,14 @@ async def test_structured_output():
         response = json.loads(result.content[0].text)
 
         # Check expected fields
-        expected_fields = ['success', 'results']
+        expected_fields = ["success", "results"]
         for field in expected_fields:
             assert field in response, f"Missing field: {field}"
 
         # Check result structure if results exist
-        if response.get('results'):
-            result_item = response['results'][0]
-            result_fields = ['title', 'url', 'snippet', 'domain', 'relevance_score', 'formatted_text']
+        if response.get("results"):
+            result_item = response["results"][0]
+            result_fields = ["title", "url", "snippet", "domain", "relevance_score", "formatted_text"]
             for field in result_fields:
                 assert field in result_item, f"Missing result field: {field}"
 
@@ -107,16 +98,12 @@ async def test_basic_search():
     """Test basic search functionality."""
     async with MCPTestSession() as session:
         result = await session.call_tool(
-            "search_nvidia",
-            arguments={
-                "query": "CUDA programming",
-                "max_results_per_domain": 2
-            }
+            "search_nvidia", arguments={"query": "CUDA programming", "max_results_per_domain": 2}
         )
 
         assert result.content, "Result should have content"
         response = json.loads(result.content[0].text)
-        assert response.get('success'), "Search should succeed"
+        assert response.get("success"), "Search should succeed"
 
 
 @pytest.mark.asyncio
@@ -124,13 +111,10 @@ async def test_query_length_validation():
     """Test that queries longer than 500 characters are rejected."""
     async with MCPTestSession() as session:
         long_query = "A" * 501
-        result = await session.call_tool(
-            "search_nvidia",
-            arguments={"query": long_query}
-        )
+        result = await session.call_tool("search_nvidia", arguments={"query": long_query})
         response = json.loads(result.content[0].text)
-        assert not response.get('success'), "Long query should be rejected"
-        assert 'too long' in response.get('error', {}).get('message', '').lower()
+        assert not response.get("success"), "Long query should be rejected"
+        assert "too long" in response.get("error", {}).get("message", "").lower()
 
 
 @pytest.mark.asyncio
@@ -141,28 +125,22 @@ async def test_max_results_validation():
             "search_nvidia",
             arguments={
                 "query": "GPU",
-                "max_results_per_domain": 100  # Should be capped at 10
-            }
+                "max_results_per_domain": 100,  # Should be capped at 10
+            },
         )
         response = json.loads(result.content[0].text)
         # Should still succeed but with capped results
-        assert response.get('success'), "Search should succeed with capped results"
+        assert response.get("success"), "Search should succeed with capped results"
 
 
 @pytest.mark.asyncio
 async def test_invalid_domain_validation():
     """Test that non-NVIDIA domains are rejected."""
     async with MCPTestSession() as session:
-        result = await session.call_tool(
-            "search_nvidia",
-            arguments={
-                "query": "test",
-                "domains": ["https://evil.com/"]
-            }
-        )
+        result = await session.call_tool("search_nvidia", arguments={"query": "test", "domains": ["https://evil.com/"]})
         response = json.loads(result.content[0].text)
-        assert not response.get('success'), "Non-NVIDIA domain should be rejected"
-        assert 'invalid' in response.get('error', {}).get('message', '').lower()
+        assert not response.get("success"), "Non-NVIDIA domain should be rejected"
+        assert "invalid" in response.get("error", {}).get("message", "").lower()
 
 
 @pytest.mark.asyncio
@@ -174,11 +152,11 @@ async def test_valid_custom_domain():
             arguments={
                 "query": "deep learning",
                 "domains": ["https://developer.nvidia.com/"],
-                "max_results_per_domain": 1
-            }
+                "max_results_per_domain": 1,
+            },
         )
         response = json.loads(result.content[0].text)
-        assert response.get('success'), "Custom NVIDIA domain search should succeed"
+        assert response.get("success"), "Custom NVIDIA domain search should succeed"
 
 
 @pytest.mark.asyncio
@@ -186,16 +164,11 @@ async def test_discover_content_basic():
     """Test basic content discovery."""
     async with MCPTestSession() as session:
         result = await session.call_tool(
-            "discover_nvidia_content",
-            arguments={
-                "content_type": "video",
-                "topic": "CUDA",
-                "max_results": 3
-            }
+            "discover_nvidia_content", arguments={"content_type": "video", "topic": "CUDA", "max_results": 3}
         )
         assert result.content, "Result should have content"
         response = json.loads(result.content[0].text)
-        assert response.get('success'), "Content discovery should succeed"
+        assert response.get("success"), "Content discovery should succeed"
 
 
 @pytest.mark.asyncio
@@ -204,15 +177,11 @@ async def test_topic_length_validation():
     async with MCPTestSession() as session:
         long_topic = "B" * 501
         result = await session.call_tool(
-            "discover_nvidia_content",
-            arguments={
-                "content_type": "blog",
-                "topic": long_topic
-            }
+            "discover_nvidia_content", arguments={"content_type": "blog", "topic": long_topic}
         )
         response = json.loads(result.content[0].text)
-        assert not response.get('success'), "Long topic should be rejected"
-        assert 'too long' in response.get('error', {}).get('message', '').lower()
+        assert not response.get("success"), "Long topic should be rejected"
+        assert "too long" in response.get("error", {}).get("message", "").lower()
 
 
 @pytest.mark.asyncio
@@ -224,12 +193,12 @@ async def test_discover_max_results_validation():
             arguments={
                 "content_type": "tutorial",
                 "topic": "AI",
-                "max_results": 100  # Should be capped at 10
-            }
+                "max_results": 100,  # Should be capped at 10
+            },
         )
         response = json.loads(result.content[0].text)
         # Should still succeed but with capped results
-        assert response.get('success'), "Content discovery should succeed with capped results"
+        assert response.get("success"), "Content discovery should succeed with capped results"
 
 
 @pytest.mark.asyncio
@@ -242,16 +211,13 @@ async def test_rate_limiting():
     (5 intervals for 6 requests).
     """
     import time
+
     async with MCPTestSession() as session:
         start = time.time()
 
         for i in range(6):
             await session.call_tool(
-                "search_nvidia",
-                arguments={
-                    "query": f"test query {i}",
-                    "max_results_per_domain": 1
-                }
+                "search_nvidia", arguments={"query": f"test query {i}", "max_results_per_domain": 1}
             )
 
         elapsed = time.time() - start
@@ -328,21 +294,16 @@ def test_keyword_extraction():
 async def test_search_results_no_ads():
     """Test that search results don't contain ad URLs."""
     async with MCPTestSession() as session:
-        result = await session.call_tool(
-            "search_nvidia",
-            arguments={
-                "query": "CUDA",
-                "max_results_per_domain": 5
-            }
-        )
+        result = await session.call_tool("search_nvidia", arguments={"query": "CUDA", "max_results_per_domain": 5})
 
         assert result.content, "Result should have content"
         response = json.loads(result.content[0].text)
 
         # Check that no results contain ad URLs
-        if response.get('results'):
-            for result_item in response['results']:
-                url = result_item.get('url', '')
+        if response.get("results"):
+            for result_item in response["results"]:
+                url = result_item.get("url", "")
                 # Import the function to check
                 from mcp_nvidia.server import is_ad_url
+
                 assert not is_ad_url(url), f"Ad URL found in results: {url}"
