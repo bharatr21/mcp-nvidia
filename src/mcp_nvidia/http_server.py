@@ -26,7 +26,7 @@ async def handle_sse(request: Request) -> Response:
     """Handle SSE connections for MCP."""
     logger.info("New SSE connection established")
 
-    async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
+    async with sse.connect_sse(request.scope, request.receive, request.scope['send']) as (read_stream, write_stream):
         await mcp_app.run(read_stream, write_stream, mcp_app.create_initialization_options())
 
 
