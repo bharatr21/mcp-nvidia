@@ -1,6 +1,6 @@
 {
   "name": "@bharatr21/mcp-nvidia",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA specific queries",
   "type": "module",
   "bin": {
