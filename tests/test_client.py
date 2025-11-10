@@ -88,9 +88,36 @@ async def test_structured_output():
         # Check result structure if results exist
         if response.get("results"):
             result_item = response["results"][0]
-            result_fields = ["title", "url", "snippet", "domain", "relevance_score", "formatted_text"]
-            for field in result_fields:
+            # Required fields
+            required_fields = ["title", "url", "snippet", "domain", "relevance_score", "content_type"]
+            for field in required_fields:
                 assert field in result_item, f"Missing result field: {field}"
+
+            # Validate content_type has an expected value
+            assert result_item["content_type"] in [
+                "announcement",
+                "article",
+                "blog_post",
+                "course",
+                "documentation",
+                "forum_discussion",
+                "guide",
+                "news",
+                "research_paper",
+                "video",
+                "blog",
+                "tutorial",
+                "other",
+            ], f"Unexpected content_type: {result_item['content_type']}"
+
+            # Optional fields (may or may not be present)
+            # published_date, metadata are optional and only appear when extracted
+            if "published_date" in result_item:
+                assert isinstance(result_item["published_date"], str), "published_date should be a string"
+                assert result_item["published_date"], "published_date should not be empty"
+
+            if "metadata" in result_item:
+                assert isinstance(result_item["metadata"], dict), "metadata should be a dictionary"
 
 
 @pytest.mark.asyncio
