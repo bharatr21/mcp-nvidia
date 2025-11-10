@@ -95,11 +95,18 @@ async def test_structured_output():
 
             # Validate content_type has an expected value
             assert result_item["content_type"] in [
+                "announcement",
                 "article",
+                "blog_post",
+                "course",
+                "documentation",
+                "forum_discussion",
+                "guide",
+                "news",
+                "research_paper",
                 "video",
                 "blog",
                 "tutorial",
-                "documentation",
                 "other",
             ], f"Unexpected content_type: {result_item['content_type']}"
 
