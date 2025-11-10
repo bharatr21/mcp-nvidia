@@ -105,4 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting prevents abuse and API bans
 - Resource exhaustion prevention with concurrency limits
 
+[Unreleased]: https://github.com/bharatr21/mcp-nvidia/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.2.5
+[0.2.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.2.0
 [0.1.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.1.0
