@@ -453,7 +453,7 @@ def extract_metadata_from_html(soup: BeautifulSoup) -> dict[str, Any]:
             if author:
                 # Clean author name
                 author = re.sub(r"^(by|author:)\s*", "", author, flags=re.I).strip()
-                if author and len(author) > 0 and len(author) < 100:
+                if author and len(author) < 100:
                     metadata["author"] = author
                     break
 
