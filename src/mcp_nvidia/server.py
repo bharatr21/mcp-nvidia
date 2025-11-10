@@ -1573,7 +1573,10 @@ async def search_all_domains(
     elif sort_by == "domain":
         # Sort by domain, then by relevance
         filtered_results.sort(
-            key=lambda x: (x.get("domain", ""), x.get("relevance_score", 0)),
+            key=lambda x: (
+                x.get("domain", ""),
+                -x.get("relevance_score", 0),
+            ),
             reverse=False,  # Alphabetical domain, highest relevance first within domain
         )
     else:
