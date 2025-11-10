@@ -37,6 +37,15 @@ The server searches across the following NVIDIA domains by default. You can cust
 - **Advanced relevance scoring** combining multiple signals
 - **Intelligent keyword extraction**
 - **Context-aware search** with enhanced snippets and highlighting
+- **Flexible sorting** by relevance, publication date, or domain
+- **Content type detection** (tutorials, announcements, guides, forums, etc.)
+- **Date extraction** from HTML metadata and page content
+
+#### Rich Metadata
+
+- **Publication dates** extracted from HTML metadata and text patterns
+- **Content metadata** including author, word count, code/video/image detection
+- **Structured content types** for easy filtering and categorization
 
 #### Connectivity
 
@@ -49,6 +58,7 @@ The server searches across the following NVIDIA domains by default. You can cust
 - **Domain-specific filtering** for targeted searches
 - **Configurable domains** via environment variable
 - **Adjustable relevance thresholds** and result limits
+- **Multiple sort options** (relevance, date, domain)
 
 ## Installation
 
@@ -201,6 +211,10 @@ Search across NVIDIA domains for specific information. Results include citations
 - `domains` (optional): List of specific NVIDIA domains to search. If not provided, searches all default domains
 - `max_results_per_domain` (optional): Maximum number of results to return per domain (default: 3)
 - `min_relevance_score` (optional): Minimum relevance score threshold (0-100) to filter results (default: 17)
+- `sort_by` (optional): Sort order for results - one of:
+  - `relevance` (default): Sort by relevance score (highest first)
+  - `date`: Sort by publication date (newest first)
+  - `domain`: Sort alphabetically by domain name
 
 **Example queries:**
 
@@ -209,6 +223,19 @@ Search across NVIDIA domains for specific information. Results include citations
 - "TensorRT optimization techniques"
 - "Latest AI announcements"
 - "Omniverse development tutorials"
+
+**Example usage with sorting:**
+
+```python
+# Sort by publication date (newest first) - great for finding latest announcements
+search_nvidia(query="NIM microservices", sort_by="date")
+
+# Sort by relevance (default) - best for finding most relevant content
+search_nvidia(query="CUDA optimization", sort_by="relevance")
+
+# Sort by domain - useful for browsing content by source
+search_nvidia(query="TensorRT", sort_by="domain")
+```
 
 **Features:**
 
@@ -219,9 +246,22 @@ Search across NVIDIA domains for specific information. Results include citations
   relevant snippet with `**bold**` formatting
 - **Relevance scoring (0-100 scale)**: Each result includes a relevance score based on query term matches in
   title, snippet, and URL
-  - Results are sorted by relevance score (highest first)
+  - Results are sorted by relevance score (highest first) when using default sorting
   - Results below the threshold are automatically filtered out
   - Score displayed as "Score: X/100" in formatted text
+- **Flexible sorting options**:
+  - `relevance`: Sort by relevance score (default)
+  - `date`: Sort by publication date, newest first
+  - `domain`: Sort alphabetically by domain name
+- **Publication date extraction**: Automatically extracts dates from HTML metadata (meta tags, time elements)
+  and page content using multiple strategies
+- **Content type detection**: Identifies content as announcements, tutorials, guides, forum discussions,
+  blog posts, documentation, research papers, news, videos, courses, or articles
+- **Rich metadata extraction**:
+  - Author name from various HTML sources
+  - Approximate word count
+  - Code snippet detection
+  - Video and image detection with counts
 - **Security controls**: Input validation and limits (customizable via code)
   - Query/topic length: 500 characters max
   - Results per domain: 10 max
@@ -245,7 +285,16 @@ Results are returned as structured JSON with the following schema:
       "snippet": "Enhanced snippet with **highlighted** keywords",
       "domain": "example.nvidia.com",
       "relevance_score": 85,
-      "formatted_text": "Markdown-formatted result for display"
+      "published_date": "2025-01-15",
+      "content_type": "tutorial",
+      "metadata": {
+        "author": "John Doe",
+        "word_count": 1234,
+        "has_code": true,
+        "has_video": false,
+        "has_images": true,
+        "image_count": 5
+      }
     }
   ],
   "metadata": {
@@ -254,6 +303,36 @@ Results are returned as structured JSON with the following schema:
   }
 }
 ```
+
+**Result Fields:**
+
+- `title`: Page title
+- `url`: Full URL to the resource
+- `snippet`: Enhanced snippet with **bold** highlighting for matched keywords
+- `domain`: Source domain (e.g., "docs.nvidia.com")
+- `relevance_score`: Relevance score from 0-100 based on keyword matches
+- `published_date` (optional): Publication date in YYYY-MM-DD format, extracted from HTML metadata or page content
+- `content_type`: Detected content type, one of:
+  - `announcement`: Product/feature announcements
+  - `tutorial`: Step-by-step tutorials
+  - `guide`: How-to guides and best practices
+  - `forum_discussion`: Forum posts and discussions
+  - `blog_post`: Blog articles
+  - `documentation`: Technical documentation
+  - `research_paper`: Research publications
+  - `news`: News articles and press releases
+  - `video`: Video content
+  - `course`: Training courses
+  - `article`: General articles (default)
+- `metadata` (optional): Additional extracted metadata:
+  - `author`: Content author name (if available)
+  - `word_count`: Approximate word count
+  - `has_code`: Whether the page contains code snippets
+  - `has_video`: Whether the page contains embedded videos
+  - `has_images`: Whether the page contains images
+  - `image_count`: Number of images on the page
+
+**Note**: The `published_date` and `metadata` fields are optional and only appear when successfully extracted from the page.
 
 ### discover_nvidia_content
 

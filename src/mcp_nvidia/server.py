@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +21,14 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 from rapidfuzz import fuzz
 from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Try to import dateutil for better date parsing
+try:
+    from dateutil import parser as date_parser
+
+    HAS_DATEUTIL = True
+except ImportError:
+    HAS_DATEUTIL = False
 
 # Import NLTK stopwords
 try:
@@ -228,6 +237,340 @@ DOMAIN_CATEGORY_MAP = [
     ("build.nvidia.com", "build"),
     ("developer.nvidia.com", "developer"),
 ]
+
+
+def extract_date_from_text(text: str) -> str | None:
+    """
+    Extract publication date from text using regex patterns and dateutil.
+
+    Args:
+        text: Text to extract date from (snippet, title, etc.)
+
+    Returns:
+        ISO format date string (YYYY-MM-DD) or None if no date found
+    """
+    if not text:
+        return None
+
+    # Common date patterns in snippets
+    date_patterns = [
+        # "January 16, 2025" or "Jan 16, 2025"
+        r"(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}",
+        # "2025-01-16" or "2025/01/16"
+        r"\d{4}[-/]\d{1,2}[-/]\d{1,2}",
+        # "01-16-2025" or "01/16/2025"
+        r"\d{1,2}[-/]\d{1,2}[-/]\d{4}",
+        # "16 January 2025"
+        r"\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}",
+    ]
+
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(0)
+            try:
+                # Try dateutil parser if available
+                if HAS_DATEUTIL:
+                    parsed_date = date_parser.parse(date_str, fuzzy=True)
+                    return parsed_date.strftime("%Y-%m-%d")
+                # Fallback to manual parsing
+                # Try common formats
+                for fmt in [
+                    "%B %d, %Y",
+                    "%b %d, %Y",
+                    "%Y-%m-%d",
+                    "%Y/%m/%d",
+                    "%m-%d-%Y",
+                    "%m/%d/%Y",
+                    "%d %B %Y",
+                    "%d %b %Y",
+                ]:
+                    try:
+                        parsed_date = datetime.strptime(date_str.replace(",", ""), fmt)  # noqa: DTZ007
+                        return parsed_date.strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+            except Exception as e:
+                logger.debug(f"Error parsing date '{date_str}': {e}")
+                continue
+
+    return None
+
+
+def extract_date_from_html(soup: BeautifulSoup) -> str | None:
+    """
+    Extract publication date from HTML metadata.
+
+    Args:
+        soup: BeautifulSoup object of the page
+
+    Returns:
+        ISO format date string (YYYY-MM-DD) or None if no date found
+    """
+    # Check common meta tags
+    meta_tags = [
+        ("property", "article:published_time"),
+        ("property", "og:published_time"),
+        ("name", "date"),
+        ("name", "publish-date"),
+        ("name", "article:published_time"),
+        ("itemprop", "datePublished"),
+        ("itemprop", "dateCreated"),
+    ]
+
+    for attr, value in meta_tags:
+        tag = soup.find("meta", {attr: value})
+        if tag and tag.get("content"):
+            date_str = tag.get("content")
+            try:
+                if HAS_DATEUTIL:
+                    parsed_date = date_parser.parse(date_str)
+                    return parsed_date.strftime("%Y-%m-%d")
+                # Try ISO format first
+                if "T" in date_str:
+                    parsed_date = datetime.fromisoformat(date_str.replace("Z", "+00:00").split("+")[0].split("T")[0])
+                    return parsed_date.strftime("%Y-%m-%d")
+            except Exception as e:
+                logger.debug(f"Error parsing date from meta tag '{date_str}': {e}")
+                continue
+
+    # Check time tags with datetime attribute
+    time_tag = soup.find("time", {"datetime": True})
+    if time_tag:
+        date_str = time_tag.get("datetime")
+        try:
+            if HAS_DATEUTIL:
+                parsed_date = date_parser.parse(date_str)
+                return parsed_date.strftime("%Y-%m-%d")
+            if "T" in date_str:
+                parsed_date = datetime.fromisoformat(date_str.replace("Z", "+00:00").split("+")[0].split("T")[0])
+                return parsed_date.strftime("%Y-%m-%d")
+        except Exception as e:
+            logger.debug(f"Error parsing date from time tag '{date_str}': {e}")
+
+    return None
+
+
+def detect_content_type(title: str, snippet: str, url: str, domain_category: str) -> str:
+    """
+    Detect the content type of a search result.
+
+    Args:
+        title: Page title
+        snippet: Page snippet
+        url: Page URL
+        domain_category: Domain category (blog, forum, documentation, etc.)
+
+    Returns:
+        Content type: announcement, tutorial, guide, forum_discussion, blog_post, documentation, research_paper, news, video, course, or article
+    """
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
+    url_lower = url.lower()
+    combined = f"{title_lower} {snippet_lower} {url_lower}"
+
+    # Announcement detection
+    announcement_keywords = ["announc", "releas", "introduc", "launch", "unveil", "availab"]
+    if any(kw in title_lower for kw in announcement_keywords):
+        return "announcement"
+
+    # Tutorial/Guide detection
+    tutorial_keywords = [
+        "tutorial",
+        "how to",
+        "how-to",
+        "step by step",
+        "getting started",
+        "quick start",
+        "walkthrough",
+    ]
+    if any(kw in combined for kw in tutorial_keywords):
+        if "guide" in combined:
+            return "guide"
+        return "tutorial"
+
+    # Video detection
+    if any(kw in combined for kw in ["video", "watch", "youtube", "webinar", "livestream"]):
+        return "video"
+
+    # Course detection
+    if any(kw in combined for kw in ["course", "training", "certification", "dli", "deep learning institute"]):
+        return "course"
+
+    # Forum discussion
+    if domain_category == "forum" or "forum" in url_lower or "discuss" in title_lower:
+        return "forum_discussion"
+
+    # Research paper
+    if domain_category == "research" or any(kw in combined for kw in ["paper", "research", "arxiv", "publication"]):
+        return "research_paper"
+
+    # News
+    if domain_category == "news" or "news" in url_lower:
+        return "news"
+
+    # Blog post
+    if domain_category == "blog" or "blog" in url_lower:
+        return "blog_post"
+
+    # Documentation
+    if (
+        domain_category == "documentation"
+        or "docs" in url_lower
+        or any(kw in combined for kw in ["api reference", "documentation", "reference guide"])
+    ):
+        return "documentation"
+
+    # Default to article
+    return "article"
+
+
+def extract_metadata_from_html(soup: BeautifulSoup) -> dict[str, Any]:
+    """
+    Extract metadata from HTML content.
+
+    Args:
+        soup: BeautifulSoup object of the page
+
+    Returns:
+        Dictionary with metadata fields
+    """
+    metadata = {}
+
+    # Extract author
+    author = None
+    author_tags = [
+        soup.find("meta", {"name": "author"}),
+        soup.find("meta", {"property": "article:author"}),
+        soup.find("meta", {"name": "article:author"}),
+        soup.find("span", {"class": re.compile(r"author", re.I)}),
+        soup.find("a", {"rel": "author"}),
+    ]
+
+    for tag in author_tags:
+        if tag:
+            author = tag.get("content") if tag.name == "meta" else tag.get_text(strip=True)
+            if author:
+                # Clean author name
+                author = re.sub(r"^(by|author:)\s*", "", author, flags=re.I).strip()
+                if author and len(author) > 0 and len(author) < 100:
+                    metadata["author"] = author
+                    break
+
+    # Get text content for analysis
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.decompose()
+
+    text = soup.get_text()
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Word count (approximate)
+    if text:
+        word_count = len(text.split())
+        metadata["word_count"] = word_count
+
+    # Detect if page has code examples
+    code_tags = soup.find_all(["code", "pre", "div"], class_=re.compile(r"code|highlight|syntax", re.I))
+    metadata["has_code"] = len(code_tags) > 0
+
+    # Detect if page has video
+    video_tags = soup.find_all(["video", "iframe"], src=re.compile(r"youtube|vimeo|video", re.I))
+    metadata["has_video"] = len(video_tags) > 0
+
+    # Detect if page has images
+    img_tags = soup.find_all("img")
+    metadata["has_images"] = len(img_tags) > 0
+    if len(img_tags) > 0:
+        metadata["image_count"] = len(img_tags)
+
+    return metadata
+
+
+# =============================================================================
+# Deduplication Helper Functions
+# =============================================================================
+# NOTE: These functions are ready for use in v0.3.0 (minor release)
+# They are currently disabled to separate the date/metadata improvements (v0.2.1)
+# from the deduplication feature (v0.3.0)
+# To re-enable: uncomment the call in search_all_domains() and add the parameter
+
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate similarity between two text strings using fuzzy matching.
+
+    Args:
+        text1: First text string
+        text2: Second text string
+
+    Returns:
+        Similarity score from 0.0 to 1.0
+    """
+    if not text1 or not text2:
+        return 0.0
+
+    # Use token_set_ratio for better similarity detection
+    return fuzz.token_set_ratio(text1.lower(), text2.lower()) / 100.0
+
+
+def deduplicate_results(
+    results: list[dict[str, Any]], title_threshold: float = 0.85, snippet_threshold: float = 0.90
+) -> list[dict[str, Any]]:
+    """
+    Deduplicate search results based on title and snippet similarity.
+
+    Args:
+        results: List of search results
+        title_threshold: Minimum title similarity to consider duplicates (0-1)
+        snippet_threshold: Minimum snippet similarity to consider duplicates (0-1)
+
+    Returns:
+        Deduplicated list of results
+    """
+    if not results:
+        return results
+
+    deduplicated = []
+    seen_urls = set()
+
+    for result in results:
+        url = result.get("url", "")
+
+        # Skip if exact URL match
+        if url in seen_urls:
+            logger.debug(f"Skipping duplicate URL: {url}")
+            continue
+
+        # Check similarity with existing results
+        is_duplicate = False
+        title = result.get("title", "")
+        snippet = result.get("snippet_plain", result.get("snippet", ""))
+
+        for existing in deduplicated:
+            existing_title = existing.get("title", "")
+            existing_snippet = existing.get("snippet_plain", existing.get("snippet", ""))
+
+            # Calculate similarities
+            title_similarity = calculate_text_similarity(title, existing_title)
+            snippet_similarity = calculate_text_similarity(snippet, existing_snippet)
+
+            # Consider duplicate if both title and snippet are very similar
+            if title_similarity >= title_threshold and snippet_similarity >= snippet_threshold:
+                logger.debug(
+                    f"Skipping similar result: {title[:50]}... "
+                    f"(title_sim={title_similarity:.2f}, snippet_sim={snippet_similarity:.2f})"
+                )
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
+            deduplicated.append(result)
+            seen_urls.add(url)
+
+    logger.info(
+        f"Deduplication: {len(results)} -> {len(deduplicated)} results ({len(results) - len(deduplicated)} duplicates removed)"
+    )
+    return deduplicated
 
 
 def extract_keywords(query: str) -> list[str]:
@@ -530,27 +873,29 @@ def build_search_response_json(
         title = result.get("title", "Untitled")
         url = result.get("url", "")
         snippet = result.get("snippet", "")
-        snippet_plain = result.get("snippet_plain", snippet.replace("**", ""))
         relevance_score = result.get("relevance_score", 0)
+        published_date = result.get("published_date")
+        content_type = result.get("content_type", "article")
+        metadata = result.get("metadata", {})
 
-        # Build formatted_text for this result (per-result markdown)
-        formatted_text = f"**{title}**\n{snippet}\n🔗 {url}\n📍 {domain}"
+        result_dict = {
+            "id": i,
+            "title": title,
+            "url": url,
+            "snippet": snippet,
+            "domain": domain,
+            "domain_category": get_domain_category(domain),
+            "content_type": content_type,
+            "relevance_score": relevance_score,
+            "matched_keywords": extract_matched_keywords(query, result),
+            "metadata": metadata,
+        }
 
-        structured_results.append(
-            {
-                "id": i,
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "snippet_plain": snippet_plain,
-                "domain": domain,
-                "domain_category": get_domain_category(domain),
-                "relevance_score": relevance_score,
-                "matched_keywords": extract_matched_keywords(query, result),
-                "metadata": {},
-                "formatted_text": formatted_text,
-            }
-        )
+        # Add published_date only if it exists
+        if published_date:
+            result_dict["published_date"] = published_date
+
+        structured_results.append(result_dict)
 
     # Build citations
     citations = []
@@ -626,35 +971,29 @@ def build_content_response_json(
         title = result.get("title", "Untitled")
         url = result.get("url", "")
         snippet = result.get("snippet", "")
-        snippet_plain = result.get("snippet_plain", snippet.replace("**", ""))
         relevance_score = result.get("relevance_score", 0)
+        published_date = result.get("published_date")
+        detected_content_type = result.get("content_type", content_type.lower())
+        metadata = result.get("metadata", {})
 
-        # Build formatted_text without stars (per-result markdown)
-        formatted_text = f"**{title}** (Score: {relevance_score}/100)\n{snippet}\n🔗 {url}\n📍 {domain}"
+        content_dict = {
+            "id": i,
+            "title": title,
+            "url": url,
+            "content_type": detected_content_type,
+            "snippet": snippet,
+            "relevance_score": relevance_score,
+            "domain": domain,
+            "domain_category": get_domain_category(domain),
+            "matched_keywords": extract_matched_keywords(topic, result),
+            "metadata": metadata,
+        }
 
-        # Add content type emoji
-        type_emoji = {"video": "🎥", "course": "📚", "tutorial": "📖", "webinar": "🎤", "blog": "📝"}.get(
-            content_type.lower(), "📄"
-        )
+        # Add published_date only if it exists
+        if published_date:
+            content_dict["published_date"] = published_date
 
-        formatted_text += f"\n{type_emoji} {content_type.title()}"
-
-        structured_content.append(
-            {
-                "id": i,
-                "title": title,
-                "url": url,
-                "content_type": content_type.lower(),
-                "snippet": snippet,
-                "snippet_plain": snippet_plain,
-                "relevance_score": relevance_score,
-                "domain": domain,
-                "domain_category": get_domain_category(domain),
-                "matched_keywords": extract_matched_keywords(topic, result),
-                "metadata": {},
-                "formatted_text": formatted_text,
-            }
-        )
+        structured_content.append(content_dict)
 
     # Build resource links
     resource_links = []
@@ -762,9 +1101,11 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
     return "\n".join(output)
 
 
-async def fetch_url_context(client: httpx.AsyncClient, url: str, snippet: str, context_chars: int = 200) -> str:
+async def fetch_url_context(
+    client: httpx.AsyncClient, url: str, snippet: str, context_chars: int = 200
+) -> tuple[str, str | None, dict[str, Any]]:
     """
-    Fetch the webpage and extract surrounding context for the snippet.
+    Fetch the webpage and extract surrounding context, date, and metadata.
 
     Args:
         client: HTTP client for making requests
@@ -773,27 +1114,36 @@ async def fetch_url_context(client: httpx.AsyncClient, url: str, snippet: str, c
         context_chars: Number of characters to include on each side of snippet
 
     Returns:
-        Extended snippet with surrounding context, or original snippet if fetch fails
+        Tuple of (enhanced_snippet, published_date, metadata)
     """
+    metadata = {}
+    published_date = None
+
     try:
         # SECURITY: Re-validate URL before fetching to prevent SSRF
         if not validate_nvidia_domain(url):
             logger.warning(f"Skipping fetch for non-NVIDIA URL: {url}")
-            return snippet
+            return snippet, published_date, metadata
 
         # SECURITY: Validate URL scheme (only allow https)
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             logger.warning(f"Skipping fetch for non-HTTP(S) URL: {url}")
-            return snippet
+            return snippet, published_date, metadata
 
         # SECURITY: Disable redirects to prevent redirect-based SSRF
         response = await client.get(url, timeout=10.0, follow_redirects=False)
         if response.status_code != 200:
-            return snippet
+            return snippet, published_date, metadata
 
         # Parse HTML to get text content
         soup = BeautifulSoup(response.text, "html.parser")
+
+        # Extract date from HTML metadata
+        published_date = extract_date_from_html(soup)
+
+        # Extract metadata from HTML
+        metadata = extract_metadata_from_html(soup)
 
         # Remove script and style elements
         for script in soup(["script", "style"]):
@@ -812,6 +1162,7 @@ async def fetch_url_context(client: httpx.AsyncClient, url: str, snippet: str, c
         # Find position of snippet in text
         pos = text_lower.find(snippet_clean[:50])  # Use first 50 chars for matching
 
+        enhanced_snippet = snippet
         if pos != -1:
             # Extract context around the snippet
             start = max(0, pos - context_chars)
@@ -829,18 +1180,21 @@ async def fetch_url_context(client: httpx.AsyncClient, url: str, snippet: str, c
             snippet_start = context.lower().find(snippet_clean[:30])
             if snippet_start != -1:
                 snippet_end = snippet_start + len(snippet)
-                return (
+                enhanced_snippet = (
                     context[:snippet_start] + "**" + context[snippet_start:snippet_end] + "**" + context[snippet_end:]
                 )
+            else:
+                enhanced_snippet = context
 
-            return context
+        # If date not found in HTML, try extracting from text
+        if not published_date:
+            published_date = extract_date_from_text(text[:2000])  # Check first 2000 chars
 
-        # If snippet not found, return original
-        return snippet
+        return enhanced_snippet, published_date, metadata
 
     except Exception as e:
         logger.debug(f"Error fetching context from {url}: {e!s}")
-        return snippet
+        return snippet, published_date, metadata
 
 
 def _fetch_ddgs_results_sync(search_query: str, max_results: int) -> list[dict[str, Any]]:
@@ -945,11 +1299,17 @@ async def search_nvidia_domain(
                     logger.debug(f"Skipping non-NVIDIA URL: {url}")
                     continue
 
-                # Fetch enhanced context with highlighted snippet
-                enhanced_snippet = await fetch_url_context(client, url, snippet, context_chars=200)
+                # Fetch enhanced context with highlighted snippet, date, and metadata
+                enhanced_snippet, published_date, page_metadata = await fetch_url_context(
+                    client, url, snippet, context_chars=200
+                )
 
                 # Create plain version without bold markers
                 snippet_plain = enhanced_snippet.replace("**", "")
+
+                # If date not extracted from page, try from snippet
+                if not published_date:
+                    published_date = extract_date_from_text(f"{title} {snippet}")
 
                 results.append(
                     {
@@ -958,6 +1318,8 @@ async def search_nvidia_domain(
                         "snippet": enhanced_snippet,
                         "snippet_plain": snippet_plain,
                         "domain": clean_domain,
+                        "published_date": published_date,
+                        "metadata": page_metadata,
                     }
                 )
 
@@ -1074,6 +1436,7 @@ async def search_all_domains(
     domains: list[str] | None = None,
     max_results_per_domain: int = 3,
     min_relevance_score: int = 17,
+    sort_by: str = "relevance",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
     Search across all NVIDIA domains.
@@ -1083,6 +1446,7 @@ async def search_all_domains(
         domains: List of domains to search (uses DEFAULT_DOMAINS if None)
         max_results_per_domain: Maximum results per domain
         min_relevance_score: Minimum relevance score threshold (0-100, default 17)
+        sort_by: Sort order - "relevance", "date", or "domain" (default: "relevance")
 
     Returns:
         Tuple of (results, errors, warnings, timing_info)
@@ -1174,11 +1538,47 @@ async def search_all_domains(
                 "combined_score": combined_score,
             }
 
+    # Add content type detection to each result
+    for result in all_results:
+        if result.get("is_error"):
+            continue
+
+        domain_category = get_domain_category(result.get("domain", ""))
+        content_type = detect_content_type(
+            result.get("title", ""),
+            result.get("snippet_plain", result.get("snippet", "")),
+            result.get("url", ""),
+            domain_category,
+        )
+        result["content_type"] = content_type
+
     # Filter by minimum relevance score
     filtered_results = [r for r in all_results if r.get("relevance_score", 0) >= min_relevance_score]
 
-    # Sort by relevance score (highest first)
-    filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    # TODO: Deduplication feature - uncomment for v0.3.0 (minor release)
+    # Deduplication is ready to use but disabled for now to separate releases
+    # To re-enable: uncomment the line below and add enable_deduplication parameter
+    # filtered_results = deduplicate_results(filtered_results)  # noqa: ERA001
+
+    # Sort results based on sort_by parameter
+    if sort_by == "date":
+        # Sort by date (newest first), then by relevance
+        filtered_results.sort(
+            key=lambda x: (
+                x.get("published_date") or "0000-00-00",  # Put undated results last
+                x.get("relevance_score", 0),
+            ),
+            reverse=True,
+        )
+    elif sort_by == "domain":
+        # Sort by domain, then by relevance
+        filtered_results.sort(
+            key=lambda x: (x.get("domain", ""), x.get("relevance_score", 0)),
+            reverse=False,  # Alphabetical domain, highest relevance first within domain
+        )
+    else:
+        # Default: sort by relevance score (highest first)
+        filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
     # Build debug info if debug logging is enabled
     debug_info = None
@@ -1186,7 +1586,11 @@ async def search_all_domains(
         search_strategies = [
             f"site:{domain.replace('https://', '').replace('http://', '').rstrip('/')} {query}" for domain in domains
         ]
-        debug_info = {"search_strategies": search_strategies, "timing_breakdown": timing_info}
+        debug_info = {
+            "search_strategies": search_strategies,
+            "timing_breakdown": timing_info,
+            "sort_by": sort_by,
+        }
 
     return filtered_results, errors, warnings, {"total_time_ms": total_time_ms, "debug_info": debug_info}
 
@@ -1361,6 +1765,12 @@ async def list_tools() -> list[Tool]:
                         "minimum": 0,
                         "maximum": 100,
                     },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["relevance", "date", "domain"],
+                        "description": "Sort order for results: 'relevance' (default, highest score first), 'date' (newest first), or 'domain' (alphabetical by domain)",
+                        "default": "relevance",
+                    },
                 },
                 "required": ["query"],
             },
@@ -1400,10 +1810,9 @@ async def list_tools() -> list[Tool]:
                                 "id": {"type": "integer"},
                                 "title": {"type": "string"},
                                 "url": {"type": "string"},
-                                "snippet": {"type": "string", "description": "Snippet with **bold** highlighting"},
-                                "snippet_plain": {
+                                "snippet": {
                                     "type": "string",
-                                    "description": "Plain text snippet without formatting",
+                                    "description": "Enhanced snippet with **bold** highlighting",
                                 },
                                 "domain": {"type": "string"},
                                 "domain_category": {
@@ -1422,12 +1831,53 @@ async def list_tools() -> list[Tool]:
                                         "other",
                                     ],
                                 },
+                                "content_type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "announcement",
+                                        "tutorial",
+                                        "guide",
+                                        "forum_discussion",
+                                        "blog_post",
+                                        "documentation",
+                                        "research_paper",
+                                        "news",
+                                        "video",
+                                        "course",
+                                        "article",
+                                    ],
+                                    "description": "Detected content type based on title, snippet, and URL analysis",
+                                },
+                                "published_date": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "description": "Publication date in YYYY-MM-DD format (if available)",
+                                },
                                 "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
                                 "matched_keywords": {"type": "array", "items": {"type": "string"}},
-                                "metadata": {"type": "object"},
-                                "formatted_text": {
-                                    "type": "string",
-                                    "description": "Markdown-formatted text for direct use",
+                                "metadata": {
+                                    "type": "object",
+                                    "description": "Additional metadata extracted from the page",
+                                    "properties": {
+                                        "author": {"type": "string", "description": "Article author (if available)"},
+                                        "word_count": {"type": "integer", "description": "Approximate word count"},
+                                        "has_code": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains code examples",
+                                        },
+                                        "has_video": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains video content",
+                                        },
+                                        "has_images": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains images",
+                                        },
+                                        "image_count": {
+                                            "type": "integer",
+                                            "description": "Number of images on the page",
+                                        },
+                                    },
                                 },
                             },
                             "required": [
@@ -1435,13 +1885,12 @@ async def list_tools() -> list[Tool]:
                                 "title",
                                 "url",
                                 "snippet",
-                                "snippet_plain",
                                 "domain",
                                 "domain_category",
+                                "content_type",
                                 "relevance_score",
                                 "matched_keywords",
                                 "metadata",
-                                "formatted_text",
                             ],
                         },
                     },
@@ -1551,10 +2000,14 @@ async def list_tools() -> list[Tool]:
                                 "title": {"type": "string"},
                                 "url": {"type": "string"},
                                 "content_type": {"type": "string"},
-                                "snippet": {"type": "string", "description": "Snippet with **bold** highlighting"},
-                                "snippet_plain": {
+                                "snippet": {
                                     "type": "string",
-                                    "description": "Plain text snippet without formatting",
+                                    "description": "Enhanced snippet with **bold** highlighting",
+                                },
+                                "published_date": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "description": "Publication date in YYYY-MM-DD format (if available)",
                                 },
                                 "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
                                 "domain": {"type": "string"},
@@ -1575,10 +2028,29 @@ async def list_tools() -> list[Tool]:
                                     ],
                                 },
                                 "matched_keywords": {"type": "array", "items": {"type": "string"}},
-                                "metadata": {"type": "object"},
-                                "formatted_text": {
-                                    "type": "string",
-                                    "description": "Markdown-formatted text for direct use",
+                                "metadata": {
+                                    "type": "object",
+                                    "description": "Additional metadata extracted from the page",
+                                    "properties": {
+                                        "author": {"type": "string", "description": "Article author (if available)"},
+                                        "word_count": {"type": "integer", "description": "Approximate word count"},
+                                        "has_code": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains code examples",
+                                        },
+                                        "has_video": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains video content",
+                                        },
+                                        "has_images": {
+                                            "type": "boolean",
+                                            "description": "Whether the page contains images",
+                                        },
+                                        "image_count": {
+                                            "type": "integer",
+                                            "description": "Number of images on the page",
+                                        },
+                                    },
                                 },
                             },
                             "required": [
@@ -1587,13 +2059,11 @@ async def list_tools() -> list[Tool]:
                                 "url",
                                 "content_type",
                                 "snippet",
-                                "snippet_plain",
                                 "relevance_score",
                                 "domain",
                                 "domain_category",
                                 "matched_keywords",
                                 "metadata",
-                                "formatted_text",
                             ],
                         },
                     },
@@ -1715,8 +2185,17 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     logger.info(f"Validated {len(validated_domains)} caller-supplied domains")
 
                 min_relevance_score = arguments.get("min_relevance_score", 17)
+                sort_by = arguments.get("sort_by", "relevance")
 
-                logger.info(f"Searching NVIDIA domains for: {query}")
+                # Validate sort_by parameter
+                if sort_by not in ["relevance", "date", "domain"]:
+                    error_response = build_error_response_json(
+                        "INVALID_PARAMETER",
+                        f"Invalid sort_by value: {sort_by}. Must be 'relevance', 'date', or 'domain'",
+                    )
+                    return build_tool_result(error_response)
+
+                logger.info(f"Searching NVIDIA domains for: {query} (sort_by={sort_by})")
 
                 # Get results with error tracking
                 results, errors, warnings, timing_info = await search_all_domains(
@@ -1724,6 +2203,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     domains=validated_domains,
                     max_results_per_domain=max_results_per_domain,
                     min_relevance_score=min_relevance_score,
+                    sort_by=sort_by,
                 )
 
                 # Build JSON response
@@ -1804,7 +2284,7 @@ async def run():
     # Set up signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
 
-    def signal_handler(signum, _frame):
+    def signal_handler(signum, frame):  # noqa: ARG001
         """Handle shutdown signals."""
         sig_name = signal.Signals(signum).name
         logger.info(f"Received {sig_name}, initiating graceful shutdown...")
