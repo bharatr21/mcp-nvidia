@@ -88,9 +88,13 @@ async def test_structured_output():
         # Check result structure if results exist
         if response.get("results"):
             result_item = response["results"][0]
-            result_fields = ["title", "url", "snippet", "domain", "relevance_score", "formatted_text"]
-            for field in result_fields:
+            # Required fields
+            required_fields = ["title", "url", "snippet", "domain", "relevance_score", "content_type"]
+            for field in required_fields:
                 assert field in result_item, f"Missing result field: {field}"
+
+            # Optional fields (may or may not be present)
+            # published_date, metadata are optional and only appear when extracted
 
 
 @pytest.mark.asyncio
