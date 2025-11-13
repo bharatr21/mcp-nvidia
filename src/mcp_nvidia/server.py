@@ -1738,7 +1738,7 @@ async def discover_content(
     # Map content types to search strategies with enhanced domains
     content_strategies = {
         "video": {
-            "query": f"{' OR '.join(expanded_topics[:3])} video OR tutorial OR youtube",  # Use top 3 expanded terms
+            "query": f"{' '.join(expanded_topics[:3])} video tutorial youtube",  # Use top 3 expanded terms
             "domains": [
                 "https://developer.nvidia.com/",
                 "https://blogs.nvidia.com/",
@@ -1749,7 +1749,7 @@ async def discover_content(
             "required_keywords": ["video", "youtube", "watch", "webinar"],  # At least one must match
         },
         "course": {
-            "query": f"{' OR '.join(expanded_topics[:3])} course OR training OR certification OR DLI",
+            "query": f"{' '.join(expanded_topics[:3])} course training certification DLI",
             "domains": [
                 "https://developer.nvidia.com/",
                 "https://resources.nvidia.com/",
@@ -1759,7 +1759,7 @@ async def discover_content(
             "required_keywords": ["course", "training", "dli", "certification", "workshop"],
         },
         "tutorial": {
-            "query": f"{' OR '.join(expanded_topics[:3])} tutorial OR guide OR how-to OR getting started",
+            "query": f"{' '.join(expanded_topics[:3])} tutorial guide how-to getting started",
             "domains": [
                 "https://developer.nvidia.com/",
                 "https://docs.nvidia.com/",
@@ -1770,7 +1770,7 @@ async def discover_content(
             "required_keywords": ["tutorial", "guide", "how-to", "how to", "getting started"],
         },
         "webinar": {
-            "query": f"{' OR '.join(expanded_topics[:3])} webinar OR event OR session OR GTC",
+            "query": f"{' '.join(expanded_topics[:3])} webinar event session GTC",
             "domains": [
                 "https://developer.nvidia.com/",
                 "https://blogs.nvidia.com/",
@@ -1780,7 +1780,7 @@ async def discover_content(
             "required_keywords": ["webinar", "event", "session", "gtc", "conference"],
         },
         "blog": {
-            "query": f"{' OR '.join(expanded_topics[:3])}",
+            "query": f"{' '.join(expanded_topics[:3])}",
             "domains": ["https://blogs.nvidia.com/", "https://nvidianews.nvidia.com/"],
             "keywords": ["blog", "article", "post"],
             "required_keywords": [],  # Blog is broad, no strict requirement
