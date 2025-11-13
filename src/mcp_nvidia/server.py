@@ -868,6 +868,8 @@ def expand_topic_with_synonyms(topic: str) -> list[str]:
             expanded_terms.extend(synonyms)
             break
 
+    terms_before_wordnet = len(expanded_terms)
+
     # Enhance with WordNet for general English synonyms
     # This catches terms not in our curated map
     try:
@@ -883,7 +885,7 @@ def expand_topic_with_synonyms(topic: str) -> list[str]:
                 if synonym.lower() not in [t.lower() for t in expanded_terms]:
                     expanded_terms.append(synonym)
 
-        logger.debug(f"WordNet expanded '{topic}' with {len(expanded_terms) - len([topic])} additional terms")
+        logger.debug(f"WordNet expanded '{topic}' with {len(expanded_terms) - terms_before_wordnet} additional terms")
 
     except (LookupError, AttributeError) as e:
         # WordNet data not available or error in lookup
@@ -1555,6 +1557,15 @@ async def search_all_domains(
     """
     import time
 
+    # SECURITY: Enforce MAX_RESULTS_PER_DOMAIN limit defensively
+    # Prevent callers from bypassing the limit by requesting excessive results
+    if max_results_per_domain > MAX_RESULTS_PER_DOMAIN:
+        logger.warning(
+            f"max_results_per_domain={max_results_per_domain} exceeds limit. "
+            f"Capping to MAX_RESULTS_PER_DOMAIN={MAX_RESULTS_PER_DOMAIN}"
+        )
+    max_results_per_domain = min(max_results_per_domain, MAX_RESULTS_PER_DOMAIN)
+
     if domains is None:
         domains = DEFAULT_DOMAINS
 
@@ -1787,10 +1798,11 @@ async def discover_content(
     )
 
     # Search using the strategy with fuzzy matching
+    capped_max_results = min(max_results * 2, MAX_RESULTS_PER_DOMAIN)
     results, errors, warnings, timing_info = await search_all_domains(
         query=strategy["query"],
         domains=strategy.get("domains"),
-        max_results_per_domain=max_results * 2,  # Get more results for better filtering
+        max_results_per_domain=capped_max_results,  # Get more results for better filtering
         min_relevance_score=10,  # Lower threshold for content discovery
     )
 
@@ -2362,7 +2374,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     logger.warning(
                         f"max_results_per_domain limited from {max_results_per_domain} to {MAX_RESULTS_PER_DOMAIN}"
                     )
-                    max_results_per_domain = MAX_RESULTS_PER_DOMAIN
+                max_results_per_domain = min(max_results_per_domain, MAX_RESULTS_PER_DOMAIN)
 
                 # Validate caller-supplied domains
                 validated_domains = None
@@ -2465,9 +2477,9 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
                 # Validate date_from format if provided
                 if date_from:
-                    import re
-
-                    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_from):
+                    try:
+                        datetime.strptime(date_from, "%Y-%m-%d")  # noqa: DTZ007
+                    except ValueError:
                         error_response = build_error_response_json(
                             "INVALID_PARAMETER", f"Invalid date_from format. Expected YYYY-MM-DD, got: {date_from}"
                         )
