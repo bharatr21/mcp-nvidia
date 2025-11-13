@@ -489,10 +489,8 @@ def extract_metadata_from_html(soup: BeautifulSoup) -> dict[str, Any]:
 # =============================================================================
 # Deduplication Helper Functions
 # =============================================================================
-# NOTE: These functions are ready for use in v0.3.0 (minor release)
-# They are currently disabled to separate the date/metadata improvements (v0.2.1)
-# from the deduplication feature (v0.3.0)
-# To re-enable: uncomment the call in search_all_domains() and add the parameter
+# NOTE: Deduplication enabled in v0.3.0 (minor release)
+# This feature removes duplicate or very similar results based on title and snippet similarity
 
 
 def calculate_text_similarity(text1: str, text2: str) -> float:
@@ -809,6 +807,104 @@ def get_domain_category(domain: str) -> str:
     return "other"
 
 
+def expand_topic_with_synonyms(topic: str) -> list[str]:
+    """
+    Expand a topic with related terms and synonyms for better semantic matching.
+
+    Uses a hybrid approach:
+    1. Domain-specific NVIDIA terminology (hardcoded, curated)
+    2. WordNet for general English synonyms (automatic, linguistic)
+
+    Args:
+        topic: The original topic string
+
+    Returns:
+        List of related terms including the original topic (max 15 terms)
+    """
+    topic_lower = topic.lower()
+
+    # Domain-specific synonym/related term mappings
+    # Curated NVIDIA-specific terminology and common domain mappings
+    synonym_map = {
+        # Life Sciences / Biology
+        "biochemistry": ["biochemistry", "life sciences", "biology", "molecular biology", "protein", "genomics"],
+        "protein": ["protein", "protein folding", "alphafold", "molecular structure"],
+        "biology": ["biology", "life sciences", "biochemistry", "molecular biology", "genomics"],
+        "genomics": ["genomics", "dna", "rna", "sequencing", "parabricks", "genome analysis"],
+        "drug discovery": ["drug discovery", "pharmaceutical", "molecular dynamics", "protein docking", "bionemo"],
+        "molecular": ["molecular", "molecular dynamics", "protein", "biochemistry"],
+        # AI / ML
+        "llm": ["llm", "large language model", "language model", "nemo", "megatron", "transformer"],
+        "generative ai": ["generative ai", "gen ai", "genai", "llm", "diffusion", "stable diffusion"],
+        "deep learning": ["deep learning", "neural network", "machine learning", "ai", "training"],
+        "training": ["training", "fine-tuning", "pre-training", "model training"],
+        # GPU / Computing
+        "gpu": ["gpu", "cuda", "graphics card", "accelerator"],
+        "cuda": ["cuda", "gpu programming", "parallel computing"],
+        "tensorrt": ["tensorrt", "inference", "optimization"],
+        # Infrastructure
+        "kubernetes": ["kubernetes", "k8s", "container", "orchestration"],
+        "docker": ["docker", "container", "containerization"],
+        # Gaming / Graphics
+        "rtx": ["rtx", "ray tracing", "graphics", "geforce", "gaming"],
+        "ray tracing": ["ray tracing", "rtx", "graphics", "rendering"],
+        # Autonomous Vehicles
+        "autonomous": ["autonomous", "self-driving", "drive", "av", "autonomous vehicle"],
+        "self-driving": ["self-driving", "autonomous", "drive", "av"],
+        # Robotics
+        "robotics": ["robotics", "isaac", "manipulation", "navigation"],
+        "robot": ["robot", "robotics", "isaac", "automation"],
+        # Virtual Worlds
+        "omniverse": ["omniverse", "usd", "3d", "simulation", "digital twin"],
+        "metaverse": ["metaverse", "virtual world", "omniverse", "3d"],
+    }
+
+    # Check for exact matches or partial matches in synonym map
+    expanded_terms = [topic]  # Always include original topic
+
+    for key, synonyms in synonym_map.items():
+        # Check if the key is in the topic or vice versa
+        if key in topic_lower or topic_lower in key:
+            expanded_terms.extend(synonyms)
+            break
+
+    # Enhance with WordNet for general English synonyms
+    # This catches terms not in our curated map
+    try:
+        from nltk.corpus import wordnet
+
+        synsets = wordnet.synsets(topic_lower.replace(" ", "_"))[:3]  # Top 3 word senses
+
+        for syn in synsets:
+            # Get top 3 synonyms per sense
+            for lemma in syn.lemmas()[:3]:
+                synonym = lemma.name().replace("_", " ")
+                # Add if not already present (case-insensitive check)
+                if synonym.lower() not in [t.lower() for t in expanded_terms]:
+                    expanded_terms.append(synonym)
+
+        logger.debug(f"WordNet expanded '{topic}' with {len(expanded_terms) - len([topic])} additional terms")
+
+    except (LookupError, AttributeError) as e:
+        # WordNet data not available or error in lookup
+        logger.debug(f"WordNet lookup skipped for '{topic}': {e}")
+    except Exception as e:
+        # Catch any other errors to prevent breaking the search
+        logger.debug(f"WordNet error for '{topic}': {e}")
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_terms = []
+    for term in expanded_terms:
+        term_lower = term.lower()
+        if term_lower not in seen:
+            seen.add(term_lower)
+            unique_terms.append(term)
+
+    # Limit to 15 terms to avoid overly broad searches
+    return unique_terms[:15]
+
+
 def extract_matched_keywords(query: str, result: dict[str, Any]) -> list[str]:
     """
     Extract which meaningful keywords from the query matched in the result.
@@ -1018,6 +1114,12 @@ def build_content_response_json(
     # Add debug info if provided
     if debug_info is not None:
         summary["debug_info"] = debug_info
+        # Add suggestions if present
+        if debug_info.get("suggestions"):
+            summary["suggestions"] = debug_info["suggestions"]
+        # Add expanded topics if present
+        if "expanded_topics" in debug_info:
+            summary["expanded_topics"] = debug_info["expanded_topics"]
 
     return {
         "success": len(errors) == 0 or len(results) > 0,
@@ -1555,10 +1657,8 @@ async def search_all_domains(
     # Filter by minimum relevance score
     filtered_results = [r for r in all_results if r.get("relevance_score", 0) >= min_relevance_score]
 
-    # TODO: Deduplication feature - uncomment for v0.3.0 (minor release)
-    # Deduplication is ready to use but disabled for now to separate releases
-    # To re-enable: uncomment the line below and add enable_deduplication parameter
-    # filtered_results = deduplicate_results(filtered_results)  # noqa: ERA001
+    # Deduplicate results (v0.3.0 feature)
+    filtered_results = deduplicate_results(filtered_results)
 
     # Sort results based on sort_by parameter
     if sort_by == "date":
@@ -1599,102 +1699,218 @@ async def search_all_domains(
 
 
 async def discover_content(
-    content_type: str, topic: str, max_results: int = 5
+    content_type: str,
+    topic: str,
+    max_results: int = 5,
+    date_from: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
-    Discover specific types of NVIDIA content (videos, courses, tutorials, etc.).
+    Discover specific types of NVIDIA content (videos, courses, tutorials, etc.) with improved semantic matching.
 
     Args:
         content_type: Type of content to find (video, course, tutorial, webinar, blog)
         topic: Topic or keyword to search for
         max_results: Maximum number of results to return
+        date_from: Optional date filter (YYYY-MM-DD) to only include content from this date onwards
 
     Returns:
         Tuple of (results, errors, warnings, timing_info)
     """
-    # Map content types to search strategies
+    import time
+
+    start_time = time.time()
+
+    # Expand topic with semantic synonyms for better coverage
+    expanded_topics = expand_topic_with_synonyms(topic)
+    logger.info(f"Expanded topic '{topic}' to: {expanded_topics}")
+
+    # Map content types to search strategies with enhanced domains
     content_strategies = {
         "video": {
-            "query": f"{topic} video OR tutorial",
-            "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
-            "keywords": ["youtube", "video", "watch", "tutorial"],
+            "query": f"{' OR '.join(expanded_topics[:3])} video OR tutorial OR youtube",  # Use top 3 expanded terms
+            "domains": [
+                "https://developer.nvidia.com/",
+                "https://blogs.nvidia.com/",
+                "https://resources.nvidia.com/",
+                "https://forums.developer.nvidia.com/",
+            ],
+            "keywords": ["youtube", "video", "watch", "tutorial", "webinar", "livestream"],
+            "required_keywords": ["video", "youtube", "watch", "webinar"],  # At least one must match
         },
         "course": {
-            "query": f"{topic} course OR training OR certification",
-            "domains": ["https://developer.nvidia.com/"],
-            "keywords": ["course", "training", "dli", "certification", "learn"],
+            "query": f"{' OR '.join(expanded_topics[:3])} course OR training OR certification OR DLI",
+            "domains": [
+                "https://developer.nvidia.com/",
+                "https://resources.nvidia.com/",
+                "https://docs.nvidia.com/",
+            ],
+            "keywords": ["course", "training", "dli", "deep learning institute", "certification", "learn", "workshop"],
+            "required_keywords": ["course", "training", "dli", "certification", "workshop"],
         },
         "tutorial": {
-            "query": f"{topic} tutorial OR guide OR how-to",
-            "domains": ["https://developer.nvidia.com/", "https://docs.nvidia.com/"],
-            "keywords": ["tutorial", "guide", "how-to", "getting started"],
+            "query": f"{' OR '.join(expanded_topics[:3])} tutorial OR guide OR how-to OR getting started",
+            "domains": [
+                "https://developer.nvidia.com/",
+                "https://docs.nvidia.com/",
+                "https://blogs.nvidia.com/",
+                "https://nvidia.github.io/",
+            ],
+            "keywords": ["tutorial", "guide", "how-to", "how to", "getting started", "quickstart", "walkthrough"],
+            "required_keywords": ["tutorial", "guide", "how-to", "how to", "getting started"],
         },
         "webinar": {
-            "query": f"{topic} webinar OR event OR session",
-            "domains": ["https://developer.nvidia.com/", "https://blogs.nvidia.com/"],
-            "keywords": ["webinar", "event", "session", "livestream"],
+            "query": f"{' OR '.join(expanded_topics[:3])} webinar OR event OR session OR GTC",
+            "domains": [
+                "https://developer.nvidia.com/",
+                "https://blogs.nvidia.com/",
+                "https://resources.nvidia.com/",
+            ],
+            "keywords": ["webinar", "event", "session", "livestream", "gtc", "conference", "talk"],
+            "required_keywords": ["webinar", "event", "session", "gtc", "conference"],
         },
         "blog": {
-            "query": f"{topic}",
-            "domains": ["https://blogs.nvidia.com/"],
+            "query": f"{' OR '.join(expanded_topics[:3])}",
+            "domains": ["https://blogs.nvidia.com/", "https://nvidianews.nvidia.com/"],
             "keywords": ["blog", "article", "post"],
+            "required_keywords": [],  # Blog is broad, no strict requirement
         },
     }
 
     strategy = content_strategies.get(
-        content_type.lower(), {"query": f"{topic} {content_type}", "domains": DEFAULT_DOMAINS, "keywords": []}
+        content_type.lower(),
+        {
+            "query": f"{topic} {content_type}",
+            "domains": DEFAULT_DOMAINS,
+            "keywords": [content_type],
+            "required_keywords": [content_type],
+        },
     )
 
-    # Search using the strategy
+    # Search using the strategy with fuzzy matching
     results, errors, warnings, timing_info = await search_all_domains(
-        query=strategy["query"], domains=strategy.get("domains"), max_results_per_domain=max_results
+        query=strategy["query"],
+        domains=strategy.get("domains"),
+        max_results_per_domain=max_results * 2,  # Get more results for better filtering
+        min_relevance_score=10,  # Lower threshold for content discovery
     )
 
-    # Filter and rank results based on content type keywords
+    # Filter and rank results based on content type match
     filtered_results = []
     content_keywords = strategy.get("keywords", [])
+    required_keywords = strategy.get("required_keywords", [])
 
-    # Calculate max possible score for normalization
-    max_possible_score = len(content_keywords) * 6  # 3 + 2 + 1, consistent with search scoring
+    # Calculate TF-IDF scores for semantic relevance
+    tfidf_scores = calculate_tfidf_scores(results, topic)
 
-    for result in results:
+    for i, result in enumerate(results):
         title = result.get("title", "").lower()
-        snippet = result.get("snippet", "").lower()
+        snippet = result.get("snippet_plain", result.get("snippet", "")).lower()
         url = result.get("url", "").lower()
+        detected_content_type = result.get("content_type", "")
 
-        # Calculate raw relevance score based on content-type keyword matches
-        raw_score = 0
+        # Check if required keywords are present (for strict content type filtering)
+        has_required_keyword = False
+        if not required_keywords:
+            has_required_keyword = True  # No requirements, accept all
+        else:
+            for req_kw in required_keywords:
+                if req_kw in title or req_kw in snippet or req_kw in url or req_kw in detected_content_type:
+                    has_required_keyword = True
+                    break
+
+        # Skip if doesn't match required content type
+        if not has_required_keyword:
+            logger.debug(f"Skipping result (no required keyword): {title[:50]}...")
+            continue
+
+        # Calculate content type match score based on keyword presence
+        content_type_score = 0
+        matched_keywords = []
+
         for keyword in content_keywords:
             keyword_score = 0
 
-            # Title matches are most important (3 points)
+            # Check for exact or fuzzy match
             if keyword in title:
                 keyword_score += 3
-
-            # Snippet matches are moderately important (2 points)
-            if keyword in snippet:
+                matched_keywords.append(keyword)
+            elif calculate_fuzzy_match_score(keyword, title, threshold=75) > 0:
                 keyword_score += 2
 
-            # URL matches are least important (1 point)
+            if keyword in snippet:
+                keyword_score += 2
+                if keyword not in matched_keywords:
+                    matched_keywords.append(keyword)
+            elif calculate_fuzzy_match_score(keyword, snippet, threshold=75) > 0:
+                keyword_score += 1
+
             if keyword in url:
                 keyword_score += 1
 
-            raw_score += keyword_score
+            content_type_score += keyword_score
 
-        # Normalize to 0-100 scale
-        if max_possible_score > 0:
-            normalized_score = int((raw_score / max_possible_score) * 100)
-        else:
-            # If no content keywords, use the original query-based relevance
-            normalized_score = result.get("relevance_score", 0)
+        # Combine content type score with TF-IDF semantic score and original relevance
+        original_relevance = result.get("relevance_score", 0)
+        tfidf_score = tfidf_scores[i] if i < len(tfidf_scores) else 0.5
 
-        result["relevance_score"] = normalized_score
+        # Weighted combination: 40% content type match, 30% TF-IDF, 30% original relevance
+        max_content_score = len(content_keywords) * 6
+        normalized_content_score = int((content_type_score / max_content_score) * 100) if max_content_score > 0 else 50
+
+        combined_score = int(normalized_content_score * 0.4 + tfidf_score * 100 * 0.3 + original_relevance * 0.3)
+
+        result["relevance_score"] = min(combined_score, 100)
+        result["_content_match_keywords"] = matched_keywords  # For debugging
+
+        # Apply date filter if provided
+        if date_from:
+            result_date = result.get("published_date")
+            if result_date and result_date < date_from:
+                logger.debug(f"Skipping result (too old): {title[:50]}... ({result_date} < {date_from})")
+                continue
+
         filtered_results.append(result)
 
     # Sort by relevance score (highest first) and limit results
     filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
-    return filtered_results[:max_results], errors, warnings, timing_info
+    # Take top results
+    top_results = filtered_results[:max_results]
+
+    # Generate suggestions if no results found
+    suggestions = {}
+    if len(top_results) == 0:
+        suggestions = {
+            "similar_topics": expanded_topics[1:4] if len(expanded_topics) > 1 else [],  # Suggest alternative terms
+            "alternative_content_types": {},
+            "recommendation": f"Try broader search terms or different content types. Related topics: {', '.join(expanded_topics[1:3]) if len(expanded_topics) > 1 else 'N/A'}",
+        }
+
+        # Check if other content types have results
+        for alt_type in ["video", "tutorial", "blog", "course", "webinar"]:
+            if alt_type != content_type:
+                # Quick check: count results that match this alternative type
+                alt_strategy = content_strategies.get(alt_type, {})
+                alt_keywords = alt_strategy.get("keywords", [])
+                count = 0
+                for result in results[:20]:  # Check first 20 results
+                    text = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
+                    if any(kw in text for kw in alt_keywords):
+                        count += 1
+                if count > 0:
+                    suggestions["alternative_content_types"][alt_type] = count
+
+    total_time_ms = int((time.time() - start_time) * 1000)
+
+    # Add suggestions to timing_info for return
+    enhanced_timing_info = {
+        "total_time_ms": total_time_ms,
+        "suggestions": suggestions,
+        "expanded_topics": expanded_topics,
+        "debug_info": timing_info.get("debug_info", {}),
+    }
+
+    return top_results, errors, warnings, enhanced_timing_info
 
 
 def format_content_results(results: list[dict[str, Any]], content_type: str, topic: str) -> str:
@@ -1970,6 +2186,11 @@ async def list_tools() -> list[Tool]:
                         "description": "Maximum number of content items to return (default: 5)",
                         "default": 5,
                     },
+                    "date_from": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Optional date filter in YYYY-MM-DD format. Only content published on or after this date will be included.",
+                    },
                 },
                 "required": ["content_type", "topic"],
             },
@@ -2227,6 +2448,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             async with _search_semaphore:
                 content_type = arguments.get("content_type")
                 topic = arguments.get("topic")
+                date_from = arguments.get("date_from")
 
                 if not content_type or not topic:
                     error_response = build_error_response_json(
@@ -2241,6 +2463,16 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     )
                     return build_tool_result(error_response)
 
+                # Validate date_from format if provided
+                if date_from:
+                    import re
+
+                    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_from):
+                        error_response = build_error_response_json(
+                            "INVALID_PARAMETER", f"Invalid date_from format. Expected YYYY-MM-DD, got: {date_from}"
+                        )
+                        return build_tool_result(error_response)
+
                 max_results = arguments.get("max_results", 5)
 
                 # SECURITY: Limit max_results to prevent resource exhaustion
@@ -2248,11 +2480,11 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     logger.warning(f"max_results limited from {max_results} to {MAX_RESULTS_PER_DOMAIN}")
                     max_results = MAX_RESULTS_PER_DOMAIN
 
-                logger.info(f"Discovering {content_type} content for topic: {topic}")
+                logger.info(f"Discovering {content_type} content for topic: {topic} (date_from={date_from})")
 
                 # Get results with error tracking
                 results, errors, warnings, timing_info = await discover_content(
-                    content_type=content_type, topic=topic, max_results=max_results
+                    content_type=content_type, topic=topic, max_results=max_results, date_from=date_from
                 )
 
                 # Build JSON response
@@ -2287,7 +2519,7 @@ async def run():
     # Set up signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
 
-    def signal_handler(signum, frame):  # noqa: ARG001
+    def signal_handler(signum, _frame):
         """Handle shutdown signals."""
         sig_name = signal.Signals(signum).name
         logger.info(f"Received {sig_name}, initiating graceful shutdown...")
@@ -2305,7 +2537,7 @@ async def run():
 
             # Wait for either server completion or shutdown signal
             shutdown_task = asyncio.create_task(shutdown_event.wait())
-            _done, pending = await asyncio.wait([server_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED)
+            _, pending = await asyncio.wait([server_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED)
 
             # If shutdown was triggered, cancel the server
             if shutdown_event.is_set():
