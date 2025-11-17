@@ -140,10 +140,26 @@ async def fetch_url_context(
             # Extract context around the snippet with sentence boundaries
             context = extract_sentence_snippet(text, pos, max_length=context_chars * 2)
 
-            # Highlight the snippet portion
-            # Use normalized slice length for both finding and highlighting to avoid over-emphasis
-            search_slice = snippet_clean[:30]
-            snippet_start = context.lower().find(search_slice)
+            # Highlight the snippet portion using case-insensitive matching
+            # Try full snippet first, then fall back to progressively shorter prefixes
+            context_lower = context.lower()
+            snippet_start = -1
+            search_slice = snippet_clean
+
+            # Try to find the full snippet (up to 200 chars max to avoid excessive length)
+            max_search_length = min(len(snippet_clean), 200)
+            search_slice = snippet_clean[:max_search_length]
+            snippet_start = context_lower.find(search_slice)
+
+            # Fall back to shorter prefixes if full snippet not found
+            if snippet_start == -1:
+                for length in [100, 50, 30]:
+                    if len(snippet_clean) > length:
+                        search_slice = snippet_clean[:length]
+                        snippet_start = context_lower.find(search_slice)
+                        if snippet_start != -1:
+                            break
+
             if snippet_start != -1:
                 snippet_end = snippet_start + len(search_slice)
                 enhanced_snippet = (
