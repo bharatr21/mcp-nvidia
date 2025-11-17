@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-11-16
+
+### Added
+
+- **SDK Generation**: TypeScript and Python SDK generators with functional implementations
+  - Python SDK with zero MCP overhead - direct function calls to `mcp_nvidia.lib`
+  - TypeScript SDK with full type safety and MCP client integration
+  - Both SDKs provide complete type definitions and JSDoc/docstring documentation
+- **MCP Resources Protocol**: Code Execution Mode support via MCP Resources
+  - `list_resources()`: Returns all available SDK files
+  - `read_resource(uri)`: Returns SDK file contents
+  - Virtual filesystem at `mcp-nvidia://sdk/` with 8 resource files
+  - Cached generation on server startup for optimal performance
+- **Modular Architecture**: Comprehensive refactoring to improve maintainability
+  - 9 new modules in `src/mcp_nvidia/lib/`:
+    - `constants.py`: Configuration and domain lists
+    - `search.py`: Search orchestration and domain handling
+    - `relevance.py`: Scoring and ranking algorithms
+    - `snippet.py`: Context extraction and highlighting
+    - `response_builders.py`: JSON response formatting
+    - `content_discovery.py`: Content type detection
+    - `deduplication.py`: Result deduplication
+    - `utils.py`: Validation and utilities
+    - `__init__.py`: Clean exports of all functions
+  - SDK generation modules in `src/mcp_nvidia/sdk_generator/`:
+    - `python_generator.py`: Python SDK generation
+    - `typescript_generator.py`: TypeScript SDK generation
+    - `__init__.py`: SDK generation orchestration
+
+### Changed
+
+- **server.py** reduced from ~2400 to ~800 lines by extracting business logic to lib/ modules
+- Improved separation of concerns and code organization
+- Better testability through modular design
+
+### Technical
+
+- Comprehensive test suite with 18 new tests:
+  - 7 tests for SDK generation (TypeScript/Python, type conversion, multi-tool support)
+  - 11 tests for MCP Resources (listing, reading, error handling, caching)
+- Full backward compatibility - existing MCP tool calling works unchanged
+- URI validation and error handling for resource protocol
+- Snippet highlighting enhancements
+
+### Documentation
+
+- Added "SDK Resources (Code Execution Mode)" section to README
+- Usage examples for both Python and TypeScript SDKs
+- Documented differences between Python (direct) and TypeScript (MCP) approaches
+- Updated architecture documentation with new components
+- References to Anthropic's "Code Execution with MCP" and Cloudflare's "Code Mode"
+
+### Breaking Changes
+
+None - fully backward compatible
+
+## [0.3.0] - 2025-11-10
+
+### Added
+
+- Initial implementation of features later refined in 0.4.0
+
 ## [0.2.5] - 2025-11-09
 
 ### Added
@@ -105,7 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting prevents abuse and API bans
 - Resource exhaustion prevention with concurrency limits
 
-[Unreleased]: https://github.com/bharatr21/mcp-nvidia/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/bharatr21/mcp-nvidia/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.4.0
+[0.3.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.3.0
 [0.2.5]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.2.5
 [0.2.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.2.0
 [0.1.0]: https://github.com/bharatr21/mcp-nvidia/releases/tag/v0.1.0
