@@ -154,18 +154,42 @@ async def test_read_invalid_language():
 
 @pytest.mark.asyncio
 async def test_resource_caching():
-    """Test that SDK resources are cached and reused."""
-    # First call should generate cache
+    """Test that SDK resources are eagerly cached at module load."""
+    from mcp_nvidia import server
+
+    # Verify cache is already initialized (eager loading)
+    assert server._sdk_files_cache is not None
+    assert "typescript" in server._sdk_files_cache
+    assert "python" in server._sdk_files_cache
+
+    # Multiple calls should return the same cached data
     resources1 = await list_resources()
     content1 = await read_resource("mcp-nvidia://sdk/typescript/search_nvidia.ts")
 
-    # Second call should use cache
     resources2 = await list_resources()
     content2 = await read_resource("mcp-nvidia://sdk/typescript/search_nvidia.ts")
 
-    # Results should be identical
+    # Results should be identical (same cache used)
     assert len(resources1) == len(resources2)
     assert content1 == content2
+    assert content1 is content2  # Should be exact same object from cache
+
+
+@pytest.mark.asyncio
+async def test_resource_determinism():
+    """Test that SDK generation is deterministic."""
+    from mcp_nvidia import server
+
+    # Generate SDK files twice independently
+    files1 = server._generate_sdk_files()
+    files2 = server._generate_sdk_files()
+
+    # Results should be identical (deterministic generation)
+    assert files1.keys() == files2.keys()
+    for lang in files1:
+        assert files1[lang].keys() == files2[lang].keys()
+        for filename in files1[lang]:
+            assert files1[lang][filename] == files2[lang][filename], f"Mismatch in {lang}/{filename}"
 
 
 @pytest.mark.asyncio

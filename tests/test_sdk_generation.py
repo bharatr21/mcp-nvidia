@@ -204,3 +204,46 @@ def test_multiple_tools():
     py_files = generate_python_sdk(tools)
     assert "tool_one.py" in py_files
     assert "tool_two.py" in py_files
+
+
+def test_typescript_rejects_non_object_schema():
+    """Test that TypeScript generator rejects non-object top-level schemas."""
+    # Scalar top-level schema (string)
+    scalar_tool = {
+        "name": "scalar_tool",
+        "description": "Tool with scalar schema",
+        "inputSchema": {"type": "string", "description": "A string input"},
+        "outputSchema": {"type": "object", "properties": {}},
+    }
+
+    with pytest.raises(ValueError, match="top-level schema must be type 'object'"):
+        generate_typescript_sdk([scalar_tool])
+
+    # Union top-level schema
+    union_tool = {
+        "name": "union_tool",
+        "description": "Tool with union schema",
+        "inputSchema": {"type": ["string", "number"]},
+        "outputSchema": {"type": "object", "properties": {}},
+    }
+
+    with pytest.raises(ValueError, match="top-level schema must be type 'object'"):
+        generate_typescript_sdk([union_tool])
+
+
+def test_typescript_rejects_object_without_properties():
+    """Test that TypeScript generator rejects object schemas without properties."""
+    # Object without properties (would be Record<string, any>)
+    empty_object_tool = {
+        "name": "empty_object_tool",
+        "description": "Tool with empty object schema",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            # Note: no "properties" field
+        },
+        "outputSchema": {"type": "object", "properties": {}},
+    }
+
+    with pytest.raises(ValueError, match="object schema must have 'properties'"):
+        generate_typescript_sdk([empty_object_tool])

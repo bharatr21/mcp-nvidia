@@ -62,20 +62,19 @@ app = Server("mcp-nvidia")
 _search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
 
 
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    """List available tools."""
+def _get_tool_schemas() -> list[dict[str, Any]]:
+    """Get shared tool schemas used for both runtime tools and SDK generation."""
     return [
-        Tool(
-            name="search_nvidia",
-            description=(
+        {
+            "name": "search_nvidia",
+            "description": (
                 "Search across multiple NVIDIA domains including developer resources, documentation, "
                 "blogs, news, forums, research papers, NGC catalog, Omniverse docs, GitHub Pages, and more. "
                 "This tool helps find relevant information about NVIDIA technologies, products, "
                 "and services. Results include citations with URLs for reference and are categorized "
                 "by domain type (documentation, blog, news, developer, build, research, catalog, forum, downloads, resources)."
             ),
-            inputSchema={
+            "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {
@@ -136,7 +135,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["query"],
             },
-            outputSchema={
+            "outputSchema": {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "description": "Whether the operation was successful"},
@@ -248,15 +247,15 @@ async def list_tools() -> list[Tool]:
                     "errors": {"type": "array", "items": {"type": "object"}},
                 },
             },
-        ),
-        Tool(
-            name="discover_nvidia_content",
-            description=(
+        },
+        {
+            "name": "discover_nvidia_content",
+            "description": (
                 "Discover specific types of NVIDIA content such as videos, courses, tutorials, webinars, or blog posts. "
                 "This tool helps find educational and learning resources from NVIDIA's various platforms. "
                 "Returns ranked results with relevance scores and direct links to the content."
             ),
-            inputSchema={
+            "inputSchema": {
                 "type": "object",
                 "properties": {
                     "content_type": {
@@ -288,7 +287,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["content_type", "topic"],
             },
-            outputSchema={
+            "outputSchema": {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean"},
@@ -342,8 +341,14 @@ async def list_tools() -> list[Tool]:
                     "errors": {"type": "array"},
                 },
             },
-        ),
+        },
     ]
+
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    """List available tools."""
+    return [Tool(**schema) for schema in _get_tool_schemas()]
 
 
 @app.call_tool()
@@ -555,147 +560,46 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
         return build_tool_result(error_response)
 
 
-# SDK generation cache (generated once on startup)
-_sdk_files_cache: dict[str, dict[str, str]] | None = None
-
-
 def _get_tool_definitions() -> list[dict[str, Any]]:
     """Get tool definitions for SDK generation."""
-    # Extract tool definitions from the list_tools function
-    # We need to manually construct this since list_tools is async
-    return [
-        {
-            "name": "search_nvidia",
-            "description": (
-                "Search across multiple NVIDIA domains including developer resources, documentation, "
-                "blogs, news, forums, research papers, NGC catalog, Omniverse docs, GitHub Pages, and more. "
-                "This tool helps find relevant information about NVIDIA technologies, products, "
-                "and services. Results include citations with URLs for reference and are categorized "
-                "by domain type (documentation, blog, news, developer, build, research, catalog, forum, downloads, resources)."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query to find information across NVIDIA domains",
-                    },
-                    "domains": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Optional list of specific NVIDIA domains to search. "
-                            "If not provided, searches all default domains."
-                        ),
-                    },
-                    "max_results_per_domain": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return per domain (default: 3)",
-                        "default": 3,
-                    },
-                    "min_relevance_score": {
-                        "type": "integer",
-                        "description": "Minimum relevance score threshold (0-100) to filter results (default: 17)",
-                        "default": 17,
-                        "minimum": 0,
-                        "maximum": 100,
-                    },
-                    "sort_by": {
-                        "type": "string",
-                        "enum": ["relevance", "date", "domain"],
-                        "description": "Sort order for results: 'relevance' (default, highest score first), 'date' (newest first), or 'domain' (alphabetical by domain)",
-                        "default": "relevance",
-                    },
-                },
-                "required": ["query"],
-            },
-            "outputSchema": {
-                "type": "object",
-                "properties": {
-                    "success": {"type": "boolean"},
-                    "results": {"type": "array"},
-                    "summary": {"type": "object"},
-                },
-            },
-        },
-        {
-            "name": "discover_nvidia_content",
-            "description": (
-                "Discover specific types of NVIDIA content such as videos, courses, tutorials, webinars, or blog posts. "
-                "This tool helps find educational and learning resources from NVIDIA's various platforms. "
-                "Returns ranked results with relevance scores and direct links to the content."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "content_type": {
-                        "type": "string",
-                        "enum": ["video", "course", "tutorial", "webinar", "blog"],
-                        "description": (
-                            "Type of content to discover: "
-                            "'video' for video tutorials and demonstrations, "
-                            "'course' for training courses and certifications (DLI), "
-                            "'tutorial' for step-by-step guides, "
-                            "'webinar' for webinars and live sessions, "
-                            "'blog' for blog posts and articles"
-                        ),
-                    },
-                    "topic": {
-                        "type": "string",
-                        "description": "The topic or technology to find content about (e.g., 'CUDA', 'Omniverse', 'AI')",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of content items to return (default: 5)",
-                        "default": 5,
-                    },
-                    "date_from": {
-                        "type": "string",
-                        "format": "date",
-                        "description": "Optional date filter in YYYY-MM-DD format. Only content published on or after this date will be included.",
-                    },
-                },
-                "required": ["content_type", "topic"],
-            },
-            "outputSchema": {
-                "type": "object",
-                "properties": {
-                    "success": {"type": "boolean"},
-                    "content": {"type": "array"},
-                    "summary": {"type": "object"},
-                },
-            },
-        },
-    ]
+    return _get_tool_schemas()
 
 
 def _generate_sdk_files() -> dict[str, dict[str, str]]:
-    """Generate SDK files for all languages."""
-    global _sdk_files_cache
+    """
+    Generate SDK files for all languages.
 
-    if _sdk_files_cache is not None:
-        return _sdk_files_cache
+    This function is called eagerly at module load time to avoid race conditions
+    and ensure SDK files are immediately available when the server starts.
 
+    Returns:
+        Dictionary mapping language names to file dictionaries
+    """
     logger.info("Generating SDK files...")
     tools = _get_tool_definitions()
 
-    _sdk_files_cache = {
+    sdk_files = {
         "typescript": generate_typescript_sdk(tools),
         "python": generate_python_sdk(tools),
     }
 
     logger.info(
-        f"SDK files generated: {len(_sdk_files_cache['typescript'])} TypeScript files, "
-        f"{len(_sdk_files_cache['python'])} Python files"
+        f"SDK files generated: {len(sdk_files['typescript'])} TypeScript files, "
+        f"{len(sdk_files['python'])} Python files"
     )
 
-    return _sdk_files_cache
+    return sdk_files
+
+
+# SDK generation cache (eagerly initialized at module load to avoid race conditions)
+# This is safe because SDK generation is deterministic and doesn't depend on runtime state
+_sdk_files_cache: dict[str, dict[str, str]] = _generate_sdk_files()
 
 
 @app.list_resources()
 async def list_resources() -> list[Resource]:
     """List available SDK resources."""
-    sdk_files = _generate_sdk_files()
+    sdk_files = _sdk_files_cache
     resources = []
 
     # Add TypeScript SDK files
@@ -742,7 +646,7 @@ async def read_resource(uri: str) -> str:
     if language not in ["typescript", "python"]:
         raise ValueError(f"Unknown SDK language: {language}")
 
-    sdk_files = _generate_sdk_files()
+    sdk_files = _sdk_files_cache
 
     if filename not in sdk_files[language]:
         raise ValueError(f"SDK file not found: {filename}")

@@ -4,9 +4,28 @@ from typing import Any
 
 
 def _json_type_to_ts_type(json_type: str | list, schema: dict[str, Any] | None = None) -> str:
-    """Convert JSON schema type to TypeScript type."""
+    """Convert JSON schema type to TypeScript type.
+
+    Args:
+        json_type: JSON schema type string or list of types for unions
+        schema: Full schema dict with additional constraints (enum, items, etc.)
+
+    Returns:
+        TypeScript type string
+
+    Note:
+        For union types (json_type as list), schema-level constraints apply to the whole union.
+        Per-branch constraints in unions (e.g., different array item types) are not supported.
+    """
     if isinstance(json_type, list):
         # Handle union types like ["string", "null"]
+        # Note: This creates a simple union. Per-branch schema details (like different
+        # array item types for each branch) are not preserved.
+        # If the schema has shared constraints (enum), they're applied to the whole union.
+        if schema and "enum" in schema:
+            # Enum applies to the whole union
+            enum_values = [f'"{val}"' if isinstance(val, str) else str(val) for val in schema["enum"]]
+            return " | ".join(enum_values)
         return " | ".join(_json_type_to_ts_type(t) for t in json_type)
 
     type_map = {
@@ -23,7 +42,7 @@ def _json_type_to_ts_type(json_type: str | list, schema: dict[str, Any] | None =
 
     # Handle enum
     if schema and "enum" in schema:
-        enum_values = [f'"{val}"' for val in schema["enum"]]
+        enum_values = [f'"{val}"' if isinstance(val, str) else str(val) for val in schema["enum"]]
         return " | ".join(enum_values)
 
     # Handle array items
@@ -80,7 +99,30 @@ def _generate_ts_type(schema: dict[str, Any], type_name: str | None = None) -> s
 
 
 def _generate_ts_interface(name: str, schema: dict[str, Any], is_export: bool = True) -> str:
-    """Generate a TypeScript interface from a JSON schema."""
+    """Generate a TypeScript interface from a JSON schema.
+
+    Args:
+        name: The interface name
+        schema: JSON schema (must be type: "object" with properties)
+        is_export: Whether to add export keyword
+
+    Raises:
+        ValueError: If schema is not an object with properties
+    """
+    # Validate that schema is an object with properties
+    schema_type = schema.get("type")
+    if schema_type != "object":
+        raise ValueError(
+            f"Cannot generate interface {name}: top-level schema must be type 'object', "
+            f"got '{schema_type}'. Non-object schemas are not currently supported for interfaces."
+        )
+
+    if "properties" not in schema:
+        raise ValueError(
+            f"Cannot generate interface {name}: object schema must have 'properties'. "
+            f"Got schema without properties (might be an empty object or Record type)."
+        )
+
     lines = []
 
     # Add description as JSDoc

@@ -8,7 +8,14 @@ from typing import Any
 import httpx
 from ddgs import DDGS
 
-from mcp_nvidia.lib.constants import DDGS_MIN_INTERVAL, DEFAULT_DOMAINS, MAX_RESULTS_PER_DOMAIN, validate_nvidia_domain
+from mcp_nvidia.lib.constants import (
+    DDGS_MIN_INTERVAL,
+    DDGS_RATE_LIMIT_LOCK,
+    DEFAULT_DOMAINS,
+    MAX_CONCURRENT_SEARCHES,
+    MAX_RESULTS_PER_DOMAIN,
+    validate_nvidia_domain,
+)
 from mcp_nvidia.lib.deduplication import deduplicate_results
 from mcp_nvidia.lib.relevance import (
     calculate_search_relevance,
@@ -22,8 +29,8 @@ from mcp_nvidia.lib.utils import detect_content_type, extract_date_from_text, ge
 logger = logging.getLogger(__name__)
 
 # Rate limiting state for DDGS API
+# Lock is imported from constants.py to ensure process-wide coordination
 _last_ddgs_call_time = 0.0
-_ddgs_call_lock = asyncio.Lock()
 
 
 def _fetch_ddgs_results_sync(search_query: str, max_results: int) -> list[dict[str, Any]]:
@@ -62,7 +69,7 @@ async def _fetch_ddgs_results(search_query: str, max_results: int) -> list[dict[
     """
     global _last_ddgs_call_time
 
-    async with _ddgs_call_lock:
+    async with DDGS_RATE_LIMIT_LOCK:
         # SECURITY: Enforce minimum interval between DDGS calls
         now = asyncio.get_event_loop().time()
         elapsed = now - _last_ddgs_call_time
@@ -174,6 +181,33 @@ async def search_nvidia_domain(
     return results
 
 
+async def _search_domain_with_semaphore(
+    semaphore: asyncio.Semaphore,
+    client: httpx.AsyncClient,
+    domain: str,
+    query: str,
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """
+    Wrapper to search a domain with semaphore-based concurrency limiting.
+
+    This ensures that at most MAX_CONCURRENT_SEARCHES domains are searched
+    concurrently within a single request, preventing resource exhaustion.
+
+    Args:
+        semaphore: Asyncio semaphore to limit concurrency
+        client: HTTP client for making requests
+        domain: Domain to search
+        query: Search query
+        max_results: Maximum number of results
+
+    Returns:
+        List of search results
+    """
+    async with semaphore:
+        return await search_nvidia_domain(client, domain, query, max_results)
+
+
 async def search_all_domains(
     query: str,
     domains: list[str] | None = None,
@@ -187,7 +221,11 @@ async def search_all_domains(
     blocked_domains: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
-    Search across all NVIDIA domains.
+    Search across all NVIDIA domains with controlled concurrency.
+
+    Domain searches are parallelized but limited to MAX_CONCURRENT_SEARCHES
+    concurrent operations to prevent resource exhaustion and ensure predictable
+    performance under heavier configurations.
 
     Args:
         query: Search query
@@ -248,11 +286,18 @@ async def search_all_domains(
 
     start_time = time.time()
 
+    # Create semaphore to limit concurrent domain searches
+    # This prevents resource exhaustion when searching many domains
+    domain_search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # Search all domains concurrently with timing
+        # Search all domains with controlled concurrency
         domain_start_times = {domain: time.time() for domain in domains}
 
-        tasks = [search_nvidia_domain(client, domain, query, max_results_per_domain) for domain in domains]
+        tasks = [
+            _search_domain_with_semaphore(domain_search_semaphore, client, domain, query, max_results_per_domain)
+            for domain in domains
+        ]
 
         domain_results = await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -5,8 +5,9 @@ from typing import Any
 
 from rapidfuzz import fuzz
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-from mcp_nvidia.lib.constants import NVIDIA_PRODUCT_VARIANTS
+from mcp_nvidia.lib.constants import NVIDIA_PRODUCT_VARIANTS, STOPWORDS_FALLBACK
 
 logger = logging.getLogger(__name__)
 
@@ -20,38 +21,10 @@ try:
     except LookupError:
         nltk.download("stopwords", quiet=True)
         STOPWORDS = set(stopwords.words("english"))
+    except Exception:
+        STOPWORDS = STOPWORDS_FALLBACK
 except ImportError:
-    STOPWORDS = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "has",
-        "he",
-        "in",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "that",
-        "the",
-        "to",
-        "was",
-        "will",
-        "with",
-        "this",
-        "but",
-        "or",
-        "not",
-        "can",
-    }
+    STOPWORDS = STOPWORDS_FALLBACK
 
 
 def extract_keywords(query: str) -> list[str]:
@@ -253,10 +226,6 @@ def calculate_tfidf_scores(results: list[dict[str, Any]], query: str) -> list[fl
 
         # Fit and transform
         tfidf_matrix = vectorizer.fit_transform(corpus)
-
-        # Calculate cosine similarity between query and each result
-        from sklearn.metrics.pairwise import cosine_similarity
-
         query_vector = tfidf_matrix[0:1]
         result_vectors = tfidf_matrix[1:]
 

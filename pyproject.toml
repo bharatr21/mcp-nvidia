@@ -163,6 +163,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
     "ARG001",  # Allow unused arguments in tests (fixtures)
     "PLR2004", # Allow magic values in tests
     "PLC0415", # Allow imports not at top-level in tests
+    "SLF001",  # Allow private member access in tests (for implementation testing)
     "EXE001",  # Shebang issues
 ]
 "example_usage.py" = [

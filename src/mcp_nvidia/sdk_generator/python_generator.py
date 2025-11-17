@@ -262,7 +262,12 @@ def generate_python_sdk(tools: list[dict[str, Any]]) -> dict[str, str]:
         lines.append("")
 
         # Imports
-        lines.append("from typing import Any, Literal, NotRequired, TypedDict")
+        lines.append("from typing import Any, Literal, TypedDict")
+        lines.append("")
+        lines.append("try:")
+        lines.append("    from typing import NotRequired")
+        lines.append("except ImportError:")
+        lines.append("    from typing_extensions import NotRequired")
         lines.append("")
         lines.append("")
 
@@ -362,7 +367,7 @@ def generate_python_sdk(tools: list[dict[str, Any]]) -> dict[str, str]:
     readme_lines.append("provide full type safety when calling NVIDIA MCP tools.")
     readme_lines.append("")
     readme_lines.append("```python")
-    readme_lines.append("from nvidia_mcp_sdk import search_nvidia, SearchNvidiaInput")
+    readme_lines.append("from mcp_nvidia_sdk import search_nvidia, SearchNvidiaInput")
     readme_lines.append("")
     readme_lines.append("# Full type safety for inputs and outputs")
     readme_lines.append("result = await search_nvidia({")

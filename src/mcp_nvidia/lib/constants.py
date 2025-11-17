@@ -108,6 +108,39 @@ DOMAIN_CATEGORY_MAP = [
 ]
 
 
+STOPWORDS_FALLBACK = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "he",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "that",
+    "the",
+    "to",
+    "was",
+    "will",
+    "with",
+    "this",
+    "but",
+    "or",
+    "not",
+    "can",
+}
+
+
 def validate_nvidia_domain(domain: str) -> bool:
     """
     Validate that a domain is a valid NVIDIA domain or subdomain.

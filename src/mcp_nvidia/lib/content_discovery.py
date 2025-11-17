@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import date, datetime
 from typing import Any
 
 from mcp_nvidia.lib.constants import DEFAULT_DOMAINS, MAX_RESULTS_PER_DOMAIN
@@ -9,6 +10,53 @@ from mcp_nvidia.lib.relevance import calculate_fuzzy_match_score, calculate_tfid
 from mcp_nvidia.lib.search import search_all_domains
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_date(date_str: str) -> date | None:
+    """
+    Parse a date string into a date object.
+
+    Supports multiple common formats:
+    - ISO: YYYY-MM-DD
+    - US: MM/DD/YYYY
+    - European: DD/MM/YYYY
+    - With time: YYYY-MM-DD HH:MM:SS
+
+    Args:
+        date_str: Date string in various formats
+
+    Returns:
+        date object or None if parsing fails
+    """
+    if not date_str:
+        return None
+
+    # Try ISO format first (most common and fastest)
+    try:
+        return datetime.fromisoformat(date_str.split("T")[0]).date()
+    except (ValueError, AttributeError, TypeError):
+        pass
+
+    # Try common date formats
+    common_formats = [
+        "%Y-%m-%d",  # 2024-01-15
+        "%m/%d/%Y",  # 01/15/2024 (US)
+        "%d/%m/%Y",  # 15/01/2024 (European)
+        "%B %d, %Y",  # January 15, 2024
+        "%b %d, %Y",  # Jan 15, 2024
+        "%Y/%m/%d",  # 2024/01/15
+        "%d-%m-%Y",  # 15-01-2024
+        "%Y-%m-%d %H:%M:%S",  # With time
+    ]
+
+    for fmt in common_formats:
+        try:
+            return datetime.strptime(date_str.strip(), fmt).date()  # noqa: DTZ007
+        except (ValueError, AttributeError, TypeError):
+            continue
+
+    logger.debug(f"Could not parse date in any known format: {date_str}")
+    return None
 
 
 async def discover_content(
@@ -176,10 +224,24 @@ async def discover_content(
 
         # Apply date filter if provided
         if date_from:
-            result_date = result.get("published_date")
-            if result_date and result_date < date_from:
-                logger.debug(f"Skipping result (too old): {title[:50]}... ({result_date} < {date_from})")
-                continue
+            result_date_str = result.get("published_date")
+            if result_date_str:
+                # Parse both dates into date objects for proper comparison
+                filter_date = _parse_date(date_from)
+                result_date = _parse_date(result_date_str)
+
+                if filter_date and result_date:
+                    # Both dates parsed successfully - compare as date objects
+                    if result_date < filter_date:
+                        logger.debug(f"Skipping result (too old): {title[:50]}... ({result_date} < {filter_date})")
+                        continue
+                elif filter_date and not result_date:
+                    # Filter date is valid but result date failed to parse
+                    # Log warning and skip date filter for this result (accept it)
+                    logger.debug(
+                        f"Could not parse result date '{result_date_str}', skipping date filter for this result"
+                    )
+                # If filter_date is None (invalid), we skip the date filter entirely
 
         filtered_results.append(result)
 

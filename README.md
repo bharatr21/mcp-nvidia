@@ -201,7 +201,7 @@ mcp-nvidia  # same as stdio
 
 ## SDK Resources (Code Execution Mode)
 
-In addition to the standard MCP tool calling interface, this server exposes **TypeScript and Python SDKs**
+In addition to the standard MCP tool-calling interface, this server exposes **TypeScript and Python SDKs**
 as MCP Resources. This enables code execution workflows where AI agents can:
 
 1. **Discover SDK files** via `list_resources()`

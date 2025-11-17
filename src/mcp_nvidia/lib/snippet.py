@@ -27,7 +27,7 @@ def extract_sentence_snippet(text: str, match_pos: int, max_length: int = 400) -
         Snippet ending at a sentence boundary
     """
     # Sentence delimiters
-    sentence_ends = {".  ", "! ", "? ", ".\n", "!\n", "?\n"}
+    sentence_ends = {". ", "! ", "? ", ".\n", "!\n", "?\n"}
 
     # Find start position (go back up to max_length/2 characters)
     start = max(0, match_pos - max_length // 2)
@@ -98,7 +98,7 @@ async def fetch_url_context(
             logger.warning(f"Skipping fetch for non-NVIDIA URL: {url}")
             return snippet, published_date, metadata
 
-        # SECURITY: Validate URL scheme (only allow https)
+        # SECURITY: Validate URL scheme (only allow http/https)
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             logger.warning(f"Skipping fetch for non-HTTP(S) URL: {url}")
@@ -141,9 +141,11 @@ async def fetch_url_context(
             context = extract_sentence_snippet(text, pos, max_length=context_chars * 2)
 
             # Highlight the snippet portion
-            snippet_start = context.lower().find(snippet_clean[:30])
+            # Use normalized slice length for both finding and highlighting to avoid over-emphasis
+            search_slice = snippet_clean[:30]
+            snippet_start = context.lower().find(search_slice)
             if snippet_start != -1:
-                snippet_end = snippet_start + len(snippet)
+                snippet_end = snippet_start + len(search_slice)
                 enhanced_snippet = (
                     context[:snippet_start] + "**" + context[snippet_start:snippet_end] + "**" + context[snippet_end:]
                 )

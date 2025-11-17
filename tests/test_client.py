@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from mcp_nvidia.lib.utils import is_ad_url
+
 
 def get_server_command():
     """Get the MCP server command path."""
@@ -255,7 +257,6 @@ async def test_rate_limiting():
 
 def test_ad_url_blocking():
     """Test that ad URLs are correctly identified and blocked."""
-    from mcp_nvidia.lib.utils import is_ad_url
 
     # Test DuckDuckGo ad URLs
     assert is_ad_url("https://duckduckgo.com/y.js?ad_domain=wyzant.com&ad_provider=bingv7aa&ad_type=txad")

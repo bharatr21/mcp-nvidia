@@ -49,8 +49,8 @@ def deduplicate_results(
     for result in results:
         url = result.get("url", "")
 
-        # Skip if exact URL match
-        if url in seen_urls:
+        # Skip if exact URL match (only for non-empty URLs)
+        if url and url in seen_urls:
             logger.debug(f"Skipping duplicate URL: {url}")
             continue
 
@@ -78,7 +78,8 @@ def deduplicate_results(
 
         if not is_duplicate:
             deduplicated.append(result)
-            seen_urls.add(url)
+            if url:
+                seen_urls.add(url)
 
     logger.info(
         f"Deduplication: {len(results)} -> {len(deduplicated)} results ({len(results) - len(deduplicated)} duplicates removed)"
