@@ -199,6 +199,177 @@ mcp-nvidia  # same as stdio
 }
 ```
 
+## SDK Resources (Code Execution Mode)
+
+In addition to the standard MCP tool-calling interface, this server exposes **TypeScript and Python SDKs**
+as MCP Resources. This enables code execution workflows where AI agents can:
+
+1. **Discover SDK files** via `list_resources()`
+2. **Read type definitions** via `read_resource(uri)`
+3. **Write code** that uses fully-typed interfaces instead of raw tool calls
+
+This approach provides the benefits described in
+[Anthropic's Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) and
+[Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/):
+
+- **Type safety** - Full TypeScript/Python type hints for inputs and outputs
+- **Data processing in code** - Filter and transform results before returning to the model
+- **Leverages LLM strengths** - LLMs excel at writing code against APIs
+
+### Available SDK Resources
+
+The server exposes the following resources via the MCP Resources protocol:
+
+**TypeScript SDK:**
+
+- `mcp-nvidia://sdk/typescript/search_nvidia.ts` - TypeScript types and interface for search_nvidia
+- `mcp-nvidia://sdk/typescript/discover_nvidia_content.ts` - TypeScript types for discover_nvidia_content
+- `mcp-nvidia://sdk/typescript/index.ts` - Barrel export file
+- `mcp-nvidia://sdk/typescript/README.md` - TypeScript SDK documentation
+
+**Python SDK:**
+
+- `mcp-nvidia://sdk/python/search_nvidia.py` - Python types and interface for search_nvidia
+- `mcp-nvidia://sdk/python/discover_nvidia_content.py` - Python types for discover_nvidia_content
+- `mcp-nvidia://sdk/python/__init__.py` - Package exports
+- `mcp-nvidia://sdk/python/README.md` - Python SDK documentation
+
+### Example: Code Execution Workflow
+
+Instead of calling tools directly:
+
+```python
+# Traditional MCP tool call
+result = call_tool("search_nvidia", {"query": "CUDA", "max_results_per_domain": 5})
+```
+
+An agent can discover and use typed SDKs:
+
+```typescript
+// 1. Agent lists resources to discover SDK files
+const resources = await client.list_resources();
+// Returns: mcp-nvidia://sdk/typescript/search_nvidia.ts, etc.
+
+// 2. Agent reads the TypeScript definitions
+const sdkContent = await client.read_resource("mcp-nvidia://sdk/typescript/search_nvidia.ts");
+
+// 3. Agent writes code using the typed interface
+import { searchNvidia, SearchNvidiaInput } from "./search_nvidia";
+
+const input: SearchNvidiaInput = {
+  query: "CUDA programming",
+  max_results_per_domain: 5,
+  sort_by: "relevance"
+};
+
+const result = await searchNvidia(input);
+
+// 4. Process results in code
+const tutorials = result.results.filter(r => r.content_type === "tutorial");
+const recent = result.results.filter(r => r.published_date > "2024-01-01");
+```
+
+The generated SDK files include:
+
+- **TypeScript SDK**: Full interfaces with JSDoc + functional wrappers that call MCP tools via client
+- **Python SDK**: TypedDict definitions + direct implementation calls (no MCP overhead!)
+- Type-safe input/output schemas
+- Example usage code
+- Comprehensive documentation
+
+**Key Difference:**
+
+- **Python SDK**: Directly calls `mcp_nvidia.lib` functions - no MCP protocol overhead
+- **TypeScript SDK**: Calls via MCP client (since implementation is in Python)
+
+### How to Use SDK Resources
+
+**Via MCP Client:**
+
+Any MCP client that supports resources can access these SDK files:
+
+```python
+# List available SDK resources
+resources = await mcp_client.list_resources()
+
+# Read a specific SDK file
+typescript_sdk = await mcp_client.read_resource("mcp-nvidia://sdk/typescript/search_nvidia.ts")
+python_sdk = await mcp_client.read_resource("mcp-nvidia://sdk/python/search_nvidia.py")
+```
+
+**Using the Python SDK (Direct Calls):**
+
+```python
+# Import the generated SDK
+from mcp_nvidia_sdk import search_nvidia
+
+# Call directly - no MCP overhead!
+result = await search_nvidia({
+    "query": "CUDA optimization",
+    "max_results_per_domain": 5,
+    "sort_by": "date"
+})
+
+# Process with full type safety
+for item in result["results"]:
+    print(f"{item['title']}: {item['url']}")
+```
+
+**Using the TypeScript SDK (via MCP Client):**
+
+```typescript
+import { searchNvidia, MCPClient } from "./search_nvidia";
+
+// Get MCP client instance
+const client: MCPClient = getMCPClient();
+
+// Call via MCP protocol
+const result = await searchNvidia({
+  query: "CUDA optimization",
+  max_results_per_domain: 5,
+  sort_by: "date"
+}, client);
+
+// Process with full type safety
+result.results.forEach(item => {
+  console.log(`${item.title}: ${item.url}`);
+});
+```
+
+**Generated SDK Structure:**
+
+Each SDK includes:
+
+- **Type Definitions**: Full input/output type definitions automatically generated from tool schemas
+- **Async Functions**: Properly typed async function signatures for each tool
+- **Documentation**: Inline comments and docstrings explaining parameters and return types
+- **Examples**: Usage examples in the generated code
+- **Index/Init Files**: Convenient imports for all tools
+
+### SDK Generation & Testing
+
+The SDK files are **automatically generated** from the MCP tool schemas when the server starts.
+They are cached in memory for performance.
+
+**Run SDK tests:**
+
+```bash
+# Test SDK generation
+pytest tests/test_sdk_generation.py -v
+
+# Test MCP Resources
+pytest tests/test_resources.py -v
+
+# Run all tests
+pytest tests/ -v
+```
+
+### Backward Compatibility
+
+The SDK Resources feature is **fully backward compatible**. Existing MCP clients can continue using
+traditional tool calling, while clients that support code execution can use the SDK Resources.
+Both methods work simultaneously.
+
 ## Available Tools
 
 ### search_nvidia
@@ -470,6 +641,8 @@ flowchart TD
 4. **Context Enhancement**: Fetches actual page content and highlights relevant snippets
 5. **Relevance Scoring**: Calculates 0-100 scores based on keyword matches
 6. **JSON Output**: Returns structured data compatible with both AI agents and humans
+7. **SDK Generator** (New): Automatically generates TypeScript and Python SDKs from tool schemas
+8. **MCP Resources**: Exposes generated SDKs as virtual filesystem resources for code execution workflows
 
 ## Extending Domain Coverage
 

@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from mcp_nvidia.lib.utils import is_ad_url
+
 
 def get_server_command():
     """Get the MCP server command path."""
@@ -255,7 +257,6 @@ async def test_rate_limiting():
 
 def test_ad_url_blocking():
     """Test that ad URLs are correctly identified and blocked."""
-    from mcp_nvidia.server import is_ad_url
 
     # Test DuckDuckGo ad URLs
     assert is_ad_url("https://duckduckgo.com/y.js?ad_domain=wyzant.com&ad_provider=bingv7aa&ad_type=txad")
@@ -276,7 +277,7 @@ def test_ad_url_blocking():
 
 def test_keyword_extraction():
     """Test that keywords are correctly extracted from queries."""
-    from mcp_nvidia.server import extract_keywords
+    from mcp_nvidia.lib.relevance import extract_keywords
 
     # Test basic keyword extraction
     keywords = extract_keywords("How to install CUDA for deep learning")
@@ -331,6 +332,6 @@ async def test_search_results_no_ads():
             for result_item in response["results"]:
                 url = result_item.get("url", "")
                 # Import the function to check
-                from mcp_nvidia.server import is_ad_url
+                from mcp_nvidia.lib.utils import is_ad_url
 
                 assert not is_ad_url(url), f"Ad URL found in results: {url}"
