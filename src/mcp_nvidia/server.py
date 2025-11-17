@@ -584,8 +584,7 @@ def _generate_sdk_files() -> dict[str, dict[str, str]]:
     }
 
     logger.info(
-        f"SDK files generated: {len(sdk_files['typescript'])} TypeScript files, "
-        f"{len(sdk_files['python'])} Python files"
+        f"SDK files generated: {len(sdk_files['typescript'])} TypeScript files, {len(sdk_files['python'])} Python files"
     )
 
     return sdk_files
