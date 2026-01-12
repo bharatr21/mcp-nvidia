@@ -277,3 +277,49 @@ def format_search_results(results: list[dict[str, Any]], query: str) -> str:
             output.append(f"    {url}")
 
     return "\n".join(output)
+
+
+def build_tool_result_with_ui(
+    response: dict[str, Any],
+    tool_name: str,
+) -> CallToolResult:
+    """
+    Build CallToolResult with both text content and UI resource.
+
+    Args:
+        response: The JSON response dictionary
+        tool_name: Name of the tool that generated this response
+
+    Returns:
+        CallToolResult with JSON content and optional UI resource
+    """
+    try:
+        from mcp_ui_server import create_ui_resource
+
+        from mcp_nvidia.ui import render_content_ui, render_search_ui
+
+        if tool_name == "search_nvidia":
+            html = render_search_ui(response)
+        elif tool_name == "discover_nvidia_content":
+            html = render_content_ui(response)
+        else:
+            html = None
+
+        ui_content = []
+        if html:
+            ui_resource = create_ui_resource(
+                {
+                    "uri": f"ui://{tool_name}/results",
+                    "content": {"type": "rawHtml", "htmlString": html},
+                    "encoding": "text",
+                }
+            )
+            ui_content.append(ui_resource)
+
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(response, indent=2)), *ui_content],
+            structuredContent=response,
+            isError=not response.get("success", False),
+        )
+    except ImportError:
+        return build_tool_result(response)

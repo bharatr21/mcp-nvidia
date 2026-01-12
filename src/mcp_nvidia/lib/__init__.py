@@ -33,6 +33,7 @@ from mcp_nvidia.lib.response_builders import (
     build_error_response_json,
     build_search_response_json,
     build_tool_result,
+    build_tool_result_with_ui,
     format_search_results,
 )
 from mcp_nvidia.lib.search import search_all_domains, search_nvidia_domain
@@ -60,6 +61,7 @@ __all__ = [
     "build_error_response_json",
     "build_search_response_json",
     "build_tool_result",
+    "build_tool_result_with_ui",
     # Relevance
     "calculate_fuzzy_match_score",
     "calculate_search_relevance",

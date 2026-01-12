@@ -10,7 +10,7 @@ from pathlib import Path
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from mcp_nvidia import __version__
@@ -30,6 +30,9 @@ async def handle_sse(request: Request) -> Response:
     async with sse.connect_sse(request.scope, request.receive, request.scope["send"]) as (read_stream, write_stream):
         await mcp_app.run(read_stream, write_stream, mcp_app.create_initialization_options())
 
+    # Return a dummy response to satisfy type checker, though SSE session keeps connection open
+    return Response()
+
 
 async def health_check(request: Request) -> Response:
     """Health check endpoint."""
@@ -44,6 +47,99 @@ async def health_check(request: Request) -> Response:
     )
 
 
+async def handle_ui_filter(request: Request) -> HTMLResponse:
+    """Handle HTMX filter requests for search results."""
+    query = request.query_params.get("query", "")
+    sort_by = request.query_params.get("sort_by", "relevance")
+    min_relevance_score = int(request.query_params.get("min_relevance_score", "17"))
+
+    try:
+        from mcp_nvidia.lib import DEFAULT_DOMAINS, build_search_response_json, search_all_domains
+        from mcp_nvidia.ui.renderer import render_filter_ui
+
+        results, errors, warnings, timing_info = await search_all_domains(
+            query=query,
+            domains=None,
+            max_results_per_domain=10,
+            min_relevance_score=min_relevance_score,
+            sort_by=sort_by,
+            date_from=None,
+            date_to=None,
+            max_total_results=None,
+            allowed_domains=None,
+            blocked_domains=None,
+        )
+
+        response = build_search_response_json(
+            results=results,
+            query=query,
+            domains_searched=len(DEFAULT_DOMAINS),
+            search_time_ms=timing_info["total_time_ms"],
+            errors=errors,
+            warnings=warnings,
+            debug_info=timing_info.get("debug_info", {}),
+        )
+
+        html = render_filter_ui(
+            response=response,
+            sort_by=sort_by,
+            min_relevance_score=min_relevance_score,
+        )
+
+        return HTMLResponse(html)
+    except Exception as e:
+        logger.exception(f"Error in filter endpoint: {e}")
+        return HTMLResponse(f"<div class='mcp-nvidia-error'>Error: {e!s}</div>")
+
+
+async def handle_ui_content(request: Request) -> HTMLResponse:
+    """Handle HTMX content type filter requests."""
+    content_type = request.query_params.get("content_type", "video")
+    topic = request.query_params.get("topic", "")
+
+    try:
+        from mcp_nvidia.lib import build_content_response_json, discover_content
+        from mcp_nvidia.ui import render_content_ui
+
+        results, errors, warnings, timing_info = await discover_content(
+            content_type=content_type,
+            topic=topic,
+            max_results=10,
+            date_from=None,
+        )
+
+        response = build_content_response_json(
+            results=results,
+            content_type=content_type,
+            topic=topic,
+            search_time_ms=timing_info["total_time_ms"],
+            errors=errors,
+            warnings=warnings,
+            debug_info=timing_info.get("debug_info", {}),
+        )
+
+        html = render_content_ui(response)
+
+        return HTMLResponse(html)
+    except Exception as e:
+        logger.exception(f"Error in content endpoint: {e}")
+        return HTMLResponse(f"<div class='mcp-nvidia-error'>Error: {e!s}</div>")
+
+
+async def handle_citation(request: Request) -> HTMLResponse:
+    """Handle citation copy requests."""
+    citation_num = int(request.path_params.get("index", 1))
+
+    citation_html = f"""
+    <div class="mcp-nvidia-citation" hx-swap-oob="true" id="citation-{citation_num}">
+      <span class="mcp-nvidia-citation-number">[{citation_num}]</span>
+      <span>Copied to clipboard!</span>
+    </div>
+    """
+
+    return HTMLResponse(citation_html)
+
+
 # Create Starlette app
 http_app = Starlette(
     debug=False,
@@ -52,6 +148,9 @@ http_app = Starlette(
         Mount("/messages/", app=sse.handle_post_message),
         Route("/health", endpoint=health_check),
         Route("/", endpoint=health_check),
+        Route("/ui/filter", endpoint=handle_ui_filter),
+        Route("/ui/content", endpoint=handle_ui_content),
+        Route("/ui/citation/{index}", endpoint=handle_citation),
     ],
 )
 
