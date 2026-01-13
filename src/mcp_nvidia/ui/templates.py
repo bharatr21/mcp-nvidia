@@ -1,5 +1,6 @@
 """HTML templates for MCP-UI components."""
 
+import html
 from typing import Any
 
 from mcp_nvidia.ui.components import (
@@ -36,12 +37,14 @@ def render_search_ui(response: dict[str, Any]) -> str:
     citations_section = render_citations(citations)
     warnings_section = render_warnings(warnings_list)
 
+    escaped_query = html.escape(query, quote=True)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NVIDIA MCP Search - {query}</title>
+  <title>NVIDIA MCP Search - {escaped_query}</title>
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
   {STYLES}
 </head>
@@ -68,15 +71,20 @@ def render_content_ui(response: dict[str, Any]) -> str:
     content = response.get("content", [])
     warnings_list = response.get("warnings", [])
 
+    # Escape user-provided values
+    escaped_topic = html.escape(topic, quote=True)
+    escaped_total = html.escape(str(total_found), quote=True)
+    escaped_time = html.escape(str(search_time_ms), quote=True)
+
     header = f"""
     <div class="mcp-nvidia-header">
       <span class="mcp-nvidia-logo">NVIDIA</span>
       <span class="mcp-nvidia-title">Content Discovery</span>
     </div>
     <div class="mcp-nvidia-search-bar">
-      <input type="text" class="mcp-nvidia-search-input" value="{topic}" placeholder="Discover content..." readonly>
+      <input type="text" class="mcp-nvidia-search-input" value="{escaped_topic}" placeholder="Discover content..." readonly>
     </div>
-    <div class="mcp-nvidia-results-count" style="margin-bottom: 12px;">Found {total_found} results in {search_time_ms}ms</div>
+    <div class="mcp-nvidia-results-count" style="margin-bottom: 12px;">Found {escaped_total} results in {escaped_time}ms</div>
     """
 
     tabs = render_content_type_tabs(content_type, topic)
@@ -88,7 +96,7 @@ def render_content_ui(response: dict[str, Any]) -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NVIDIA Content - {topic}</title>
+  <title>NVIDIA Content - {escaped_topic}</title>
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
   {STYLES}
 </head>
@@ -109,6 +117,10 @@ def render_error_ui(error: dict[str, Any]) -> str:
     code = error.get("code", "UNKNOWN")
     message = error.get("message", "An unknown error occurred")
 
+    # Escape error details
+    escaped_code = html.escape(code, quote=True)
+    escaped_message = html.escape(message, quote=True)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -120,8 +132,8 @@ def render_error_ui(error: dict[str, Any]) -> str:
 <body>
   <div class="mcp-nvidia-ui">
     <div class="mcp-nvidia-error">
-      <strong>Error [{code}]</strong>
-      <p>{message}</p>
+      <strong>Error [{escaped_code}]</strong>
+      <p>{escaped_message}</p>
     </div>
   </div>
 </body>

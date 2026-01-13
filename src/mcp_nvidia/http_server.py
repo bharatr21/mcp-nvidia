@@ -51,7 +51,12 @@ async def handle_ui_filter(request: Request) -> HTMLResponse:
     """Handle HTMX filter requests for search results."""
     query = request.query_params.get("query", "")
     sort_by = request.query_params.get("sort_by", "relevance")
-    min_relevance_score = int(request.query_params.get("min_relevance_score", "17"))
+
+    # Validate min_relevance_score input
+    try:
+        min_relevance_score = int(request.query_params.get("min_relevance_score", "17"))
+    except (ValueError, TypeError):
+        min_relevance_score = 17
 
     try:
         from mcp_nvidia.lib import DEFAULT_DOMAINS, build_search_response_json, search_all_domains
@@ -89,7 +94,7 @@ async def handle_ui_filter(request: Request) -> HTMLResponse:
         return HTMLResponse(html)
     except Exception as e:
         logger.exception(f"Error in filter endpoint: {e}")
-        return HTMLResponse(f"<div class='mcp-nvidia-error'>Error: {e!s}</div>")
+        return HTMLResponse("<div class='mcp-nvidia-error'>An internal error occurred</div>", status_code=500)
 
 
 async def handle_ui_content(request: Request) -> HTMLResponse:
@@ -123,12 +128,17 @@ async def handle_ui_content(request: Request) -> HTMLResponse:
         return HTMLResponse(html)
     except Exception as e:
         logger.exception(f"Error in content endpoint: {e}")
-        return HTMLResponse(f"<div class='mcp-nvidia-error'>Error: {e!s}</div>")
+        return HTMLResponse("<div class='mcp-nvidia-error'>An internal error occurred</div>", status_code=500)
 
 
 async def handle_citation(request: Request) -> HTMLResponse:
     """Handle citation copy requests."""
-    citation_num = int(request.path_params.get("index", 1))
+    # Validate and parse citation index
+    index_str = request.path_params.get("index")
+    try:
+        citation_num = int(index_str) if index_str else 1
+    except (ValueError, TypeError):
+        citation_num = 1
 
     citation_html = f"""
     <div class="mcp-nvidia-citation" hx-swap-oob="true" id="citation-{citation_num}">

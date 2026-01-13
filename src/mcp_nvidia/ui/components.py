@@ -1,5 +1,7 @@
 """UI component builders for MCP-UI."""
 
+import html
+import json
 from typing import Any
 
 CONTENT_TYPE_ICONS = {
@@ -20,13 +22,14 @@ CONTENT_TYPE_ICONS = {
 
 def render_search_header(query: str) -> str:
     """Render the search header with query and meta info."""
+    escaped_query = html.escape(query, quote=True)
     return f"""
     <div class="mcp-nvidia-header">
       <span class="mcp-nvidia-logo">NVIDIA</span>
       <span class="mcp-nvidia-title">MCP Search</span>
     </div>
     <div class="mcp-nvidia-search-bar">
-      <input type="text" class="mcp-nvidia-search-input" value="{query}" placeholder="Search NVIDIA domains..." readonly>
+      <input type="text" class="mcp-nvidia-search-input" value="{escaped_query}" placeholder="Search NVIDIA domains..." readonly>
     </div>
     """
 
@@ -46,6 +49,8 @@ def render_filter_panel(
         f'<option value="{opt}" {"selected" if sort_by == opt else ""}>{sort_labels[opt]}</option>'
         for opt in sort_options
     )
+
+    escaped_query = html.escape(query, quote=True)
 
     return f"""
     <div class="mcp-nvidia-filter-panel" hx-boost="true">
@@ -69,7 +74,7 @@ def render_filter_panel(
         </div>
       </div>
 
-      <input type="hidden" name="query" value="{query}">
+      <input type="hidden" name="query" value="{escaped_query}">
 
       <span class="mcp-nvidia-results-count">{total_results} results</span>
       <span class="mcp-nvidia-results-time">⏱️ {search_time_ms}ms</span>
@@ -88,29 +93,46 @@ def render_result_card(result: dict[str, Any], index: int) -> str:
     published_date = result.get("published_date")
     matched_keywords = result.get("matched_keywords", [])
 
+    # Escape all user-provided fields
+    escaped_title = html.escape(title, quote=True)
+    escaped_snippet = html.escape(snippet, quote=True)
+    escaped_domain = html.escape(domain, quote=True)
+    escaped_content_type = html.escape(content_type.replace("_", " ").title(), quote=True)
+
+    # Validate URL - only allow safe schemes
+    safe_url = (
+        html.escape(url, quote=True) if url and url.lower().startswith(("http://", "https://", "mailto:")) else ""
+    )
+
     icon = CONTENT_TYPE_ICONS.get(content_type, "📄")
 
-    date_html = f'<span class="mcp-nvidia-date">📅 {published_date}</span>' if published_date else ""
+    # Escape date if present
+    date_html = ""
+    if published_date:
+        escaped_date = html.escape(str(published_date), quote=True)
+        date_html = f'<span class="mcp-nvidia-date">📅 {escaped_date}</span>'
 
-    keywords_html = "".join(f'<span class="mcp-nvidia-keyword">{kw}</span>' for kw in matched_keywords[:5])
+    # Escape keywords
+    escaped_keywords = [html.escape(kw, quote=True) for kw in matched_keywords[:5]]
+    keywords_html = "".join(f'<span class="mcp-nvidia-keyword">{kw}</span>' for kw in escaped_keywords)
 
-    keywords_section = f'<div class="mcp-nvidia-keywords">{keywords_html}</div>' if matched_keywords else ""
+    keywords_section = f'<div class="mcp-nvidia-keywords">{keywords_html}</div>' if escaped_keywords else ""
 
     return f"""
     <div class="mcp-nvidia-result-card">
       <div class="mcp-nvidia-result-header">
         <span class="mcp-nvidia-relevance-badge" style="--score: {score}%">{score}</span>
-        <a href="{url}" target="_blank" class="mcp-nvidia-result-title">{title}</a>
-        <span class="mcp-nvidia-content-type">{icon} {content_type.replace('_', ' ').title()}</span>
+        <a href="{safe_url}" target="_blank" class="mcp-nvidia-result-title">{escaped_title}</a>
+        <span class="mcp-nvidia-content-type">{icon} {escaped_content_type}</span>
       </div>
       <div class="mcp-nvidia-result-meta">
-        <span class="mcp-nvidia-domain-tag">{domain}</span>
+        <span class="mcp-nvidia-domain-tag">{escaped_domain}</span>
         {date_html}
       </div>
-      <p class="mcp-nvidia-result-snippet">{snippet}</p>
+      <p class="mcp-nvidia-result-snippet">{escaped_snippet}</p>
       {keywords_section}
       <div class="mcp-nvidia-result-actions">
-        <a href="{url}" target="_blank" class="mcp-nvidia-btn mcp-nvidia-btn-primary">→ Open</a>
+        <a href="{safe_url}" target="_blank" class="mcp-nvidia-btn mcp-nvidia-btn-primary">→ Open</a>
         <button class="mcp-nvidia-btn mcp-nvidia-btn-secondary"
                 hx-get="/ui/citation/{index}"
                 hx-target="#mcp-nvidia-citations"
@@ -140,22 +162,31 @@ def render_citations(citations: list[dict[str, Any]]) -> str:
     if not citations:
         return ""
 
-    citation_items = "".join(
-        f"""
+    citation_items = []
+    for c in citations:
+        # Escape all fields
+        escaped_title = html.escape(c.get("title", ""), quote=True)
+        escaped_domain = html.escape(c.get("domain", ""), quote=True)
+
+        # Validate URL
+        url = c.get("url", "")
+        safe_url = (
+            html.escape(url, quote=True) if url and url.lower().startswith(("http://", "https://", "mailto:")) else ""
+        )
+
+        citation_items.append(f"""
         <div class="mcp-nvidia-citation">
           <span class="mcp-nvidia-citation-number">[{c['number']}]</span>
-          <span>{c['title']}</span>
-          <a href="{c['url']}" target="_blank" class="mcp-nvidia-citation-link">{c['domain']}</a>
+          <span>{escaped_title}</span>
+          <a href="{safe_url}" target="_blank" class="mcp-nvidia-citation-link">{escaped_domain}</a>
         </div>
-        """
-        for c in citations
-    )
+        """)
 
     return f"""
     <div class="mcp-nvidia-citations">
       <div class="mcp-nvidia-citations-title">Citations</div>
       <div class="mcp-nvidia-citation-list">
-        {citation_items}
+        {"".join(citation_items)}
       </div>
     </div>
     """
@@ -172,16 +203,23 @@ def render_content_type_tabs(content_type: str, topic: str) -> str:
         "blog": "📝 Blog Posts",
     }
 
-    tabs = "".join(
-        f'<button class="mcp-nvidia-tab {"active" if ct == content_type else ""}" '
-        f'data-type="{ct}" '
-        f'hx-get="/ui/content" hx-target="#mcp-nvidia-content-results" '
-        f'hx-vals=\'{{"content_type": "{ct}", "topic": "{topic}"}}\' '
-        f'hx-trigger="click">{content_type_labels.get(ct, ct)}</button>'
-        for ct in content_types
-    )
+    tabs_html = []
+    for ct in content_types:
+        # Build hx-vals JSON properly and escape it
+        hx_vals_dict = {"content_type": ct, "topic": topic}
+        hx_vals_json = json.dumps(hx_vals_dict)
+        hx_vals_escaped = html.escape(hx_vals_json, quote=True)
 
-    return f'<div class="mcp-nvidia-content-type-tabs">{tabs}</div>'
+        tab_html = (
+            f'<button class="mcp-nvidia-tab {"active" if ct == content_type else ""}" '
+            f'data-type="{ct}" '
+            f'hx-get="/ui/content" hx-target="#mcp-nvidia-content-results" '
+            f"hx-vals='{hx_vals_escaped}' "
+            f'hx-trigger="click">{content_type_labels.get(ct, ct)}</button>'
+        )
+        tabs_html.append(tab_html)
+
+    return f'<div class="mcp-nvidia-content-type-tabs">{"".join(tabs_html)}</div>'
 
 
 def render_content_card(content: dict[str, Any]) -> str:
@@ -193,15 +231,25 @@ def render_content_card(content: dict[str, Any]) -> str:
     domain = content.get("domain", "")
     relevance_score = content.get("relevance_score", 0)
 
+    # Escape all user-provided fields
+    escaped_title = html.escape(title, quote=True)
+    escaped_snippet = html.escape(snippet, quote=True)
+    escaped_domain = html.escape(domain, quote=True)
+
+    # Validate URL
+    safe_url = (
+        html.escape(url, quote=True) if url and url.lower().startswith(("http://", "https://", "mailto:")) else ""
+    )
+
     icon = CONTENT_TYPE_ICONS.get(content_type, "📄")
 
     return f"""
     <div class="mcp-nvidia-content-card">
       <div class="mcp-nvidia-content-thumbnail">{icon}</div>
       <div class="mcp-nvidia-content-info">
-        <a href="{url}" target="_blank" class="mcp-nvidia-content-title">{title}</a>
-        <div class="mcp-nvidia-content-domain">{domain} · <span class="mcp-nvidia-content-score">Score: {relevance_score}</span></div>
-        <p class="mcp-nvidia-content-snippet">{snippet}</p>
+        <a href="{safe_url}" target="_blank" class="mcp-nvidia-content-title">{escaped_title}</a>
+        <div class="mcp-nvidia-content-domain">{escaped_domain} · <span class="mcp-nvidia-content-score">Score: {relevance_score}</span></div>
+        <p class="mcp-nvidia-content-snippet">{escaped_snippet}</p>
       </div>
     </div>
     """
@@ -212,7 +260,8 @@ def render_warnings(warnings: list[dict[str, Any]]) -> str:
     if not warnings:
         return ""
 
-    return "".join(f'<div class="mcp-nvidia-warning">⚠️ {w.get("message", "")}</div>' for w in warnings)
+    escaped_warnings = [html.escape(w.get("message", ""), quote=True) for w in warnings]
+    return "".join(f'<div class="mcp-nvidia-warning">⚠️ {msg}</div>' for msg in escaped_warnings)
 
 
 def render_content_container(content: list[dict[str, Any]]) -> str:
