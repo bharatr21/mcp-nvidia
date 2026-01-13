@@ -3,11 +3,12 @@
 from typing import Any
 
 from mcp_nvidia.ui.templates import (
-    render_content_ui as render_content_ui_template,
-)
-from mcp_nvidia.ui.templates import (
+    render_content_fragment,
     render_error_ui,
     render_filter_fragment,
+)
+from mcp_nvidia.ui.templates import (
+    render_content_ui as render_content_ui_template,
 )
 from mcp_nvidia.ui.templates import (
     render_search_ui as render_search_ui_template,
@@ -76,3 +77,17 @@ def render_filter_ui(
         total_results=total_results,
         search_time_ms=search_time_ms,
     )
+
+
+def render_content_ui_fragment(response: dict[str, Any]) -> str:
+    """
+    Render content discovery results as HTML fragment for HTMX tab updates.
+
+    Args:
+        response: The JSON response from discover_content
+
+    Returns:
+        HTML fragment for HTMX target
+    """
+    content = response.get("results", [])
+    return render_content_fragment(content)

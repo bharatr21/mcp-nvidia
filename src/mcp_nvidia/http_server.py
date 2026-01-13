@@ -115,9 +115,14 @@ async def handle_ui_content(request: Request) -> HTMLResponse:
     content_type = request.query_params.get("content_type", "video")
     topic = request.query_params.get("topic", "")
 
+    # Validate content_type against allowlist
+    valid_content_types = {"video", "course", "tutorial", "webinar", "blog"}
+    if content_type not in valid_content_types:
+        content_type = "video"
+
     try:
         from mcp_nvidia.lib import build_content_response_json, discover_content
-        from mcp_nvidia.ui import render_content_ui
+        from mcp_nvidia.ui.renderer import render_content_ui_fragment
     except (ImportError, ModuleNotFoundError):
         logger.warning("UI dependencies not available")
         return HTMLResponse(
@@ -143,7 +148,7 @@ async def handle_ui_content(request: Request) -> HTMLResponse:
             debug_info=timing_info.get("debug_info", {}),
         )
 
-        html = render_content_ui(response)
+        html = render_content_ui_fragment(response)
 
         return HTMLResponse(html)
     except Exception as e:

@@ -160,3 +160,8 @@ def render_filter_fragment(
     results_container = render_results_container(results)
 
     return f"{filter_panel}{results_container}"
+
+
+def render_content_fragment(content: list[dict[str, Any]]) -> str:
+    """Render content discovery fragment for HTMX tab updates."""
+    return render_content_container(content)
