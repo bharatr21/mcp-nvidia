@@ -118,7 +118,14 @@ async def handle_ui_content(request: Request) -> HTMLResponse:
     try:
         from mcp_nvidia.lib import build_content_response_json, discover_content
         from mcp_nvidia.ui import render_content_ui
+    except (ImportError, ModuleNotFoundError):
+        logger.warning("UI dependencies not available")
+        return HTMLResponse(
+            "<div class='mcp-nvidia-error'>UI features not available. Install with: pip install mcp-nvidia[ui]</div>",
+            status_code=501,
+        )
 
+    try:
         results, errors, warnings, timing_info = await discover_content(
             content_type=content_type,
             topic=topic,
