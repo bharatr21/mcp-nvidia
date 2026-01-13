@@ -89,5 +89,5 @@ def render_content_ui_fragment(response: dict[str, Any]) -> str:
     Returns:
         HTML fragment for HTMX target
     """
-    content = response.get("results", [])
+    content = response.get("content", [])
     return render_content_fragment(content)
