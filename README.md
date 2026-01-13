@@ -60,6 +60,22 @@ The server searches across the following NVIDIA domains by default. You can cust
 - **Adjustable relevance thresholds** and result limits
 - **Multiple sort options** (relevance, date, domain)
 
+#### Interactive UI (Optional)
+
+- **MCP-UI integration** with rich, interactive HTML components
+- **Real-time filtering** with HTMX for dynamic updates without page reloads
+- **NVIDIA-branded interface** with green accent theme and sticky header
+- **Search results UI** featuring:
+  - Interactive filter controls (sort by: relevance/date/domain, min relevance slider)
+  - Result cards with relevance scores, content type icons, and metadata
+  - Keyword highlighting and publication dates
+  - Copy citation functionality
+- **Content discovery UI** with:
+  - Tab navigation for different content types (videos, courses, tutorials, webinars, blogs)
+  - Dynamic content loading via HTMX partial updates
+  - Content cards with thumbnails and relevance scores
+- **Graceful degradation** - works with or without UI dependencies
+
 ## Installation
 
 ### Via npx (Easiest - recommended for MCP clients)
@@ -85,16 +101,34 @@ Or add to your Claude Desktop config:
 
 ### Via pip
 
+**Standard installation (JSON-only responses):**
+
 ```bash
 pip install mcp-nvidia
 ```
 
+**With UI features (interactive HTML components):**
+
+```bash
+pip install "mcp-nvidia[ui]"
+```
+
 ### From source
+
+**Standard installation:**
 
 ```bash
 git clone https://github.com/bharatr21/mcp-nvidia.git
 cd mcp-nvidia
 pip install -e .
+```
+
+**With UI features:**
+
+```bash
+git clone https://github.com/bharatr21/mcp-nvidia.git
+cd mcp-nvidia
+pip install -e ".[ui]"
 ```
 
 ## Usage
@@ -198,6 +232,71 @@ mcp-nvidia  # same as stdio
   }
 }
 ```
+
+### MCP-UI (Interactive HTML Components)
+
+When installed with UI dependencies (`pip install "mcp-nvidia[ui]"`), the server provides rich, interactive HTML
+interfaces alongside structured JSON responses. This is fully backward compatible - clients that don't support UI
+resources will simply receive JSON responses.
+
+#### Features
+
+**Search Results Interface:**
+
+- **NVIDIA-branded UI** with green accent theme (#76b900) and sticky header
+- **Interactive filters** that update results without page reloads:
+  - Sort by: relevance, date, or domain (dropdown)
+  - Min relevance: slider (0-100)
+- **Rich result cards** displaying:
+  - Relevance badge with score
+  - Content type icons (📖 tutorials, 🎬 videos, 📚 courses, etc.)
+  - Domain tags and publication dates
+  - Snippet previews with keyword highlighting
+  - Matched keywords (up to 5)
+  - "Open" and "Copy Citation" buttons
+- **Citations section** with numbered references
+
+**Content Discovery Interface:**
+
+- **Tabbed navigation** for content types:
+  - 🎬 Videos
+  - 📚 Courses
+  - 📖 Tutorials
+  - 🎥 Webinars
+  - 📝 Blog Posts
+- **Dynamic tab switching** with HTMX partial updates (no page reloads)
+- **Content cards** with thumbnails, titles, and relevance scores
+
+#### How It Works
+
+The UI is powered by:
+
+- **MCP-UI Server** - Generates UI resources alongside tool responses
+- **HTMX** - Enables dynamic updates without JavaScript
+- **Server-side rendering** - HTML generated from tool responses
+- **Graceful degradation** - Works without UI dependencies (returns JSON only)
+
+When you call `search_nvidia` or `discover_nvidia_content` from Claude Desktop (or other MCP-UI compatible clients),
+you'll see both:
+
+1. **Structured JSON** (for Claude to read and reason about)
+2. **Interactive HTML UI** (for you to browse and interact with)
+
+#### Security Features
+
+- **Input validation** with allowlists for sort_by and content_type
+- **XSS prevention** with HTML escaping for all user inputs
+- **URL validation** restricting to safe schemes (http, https, mailto)
+- **rel="noopener noreferrer"** on all external links to prevent tabnabbing
+- **ASGI protocol compliance** for SSE transport
+
+#### HTMX Endpoints
+
+When running in HTTP mode, the following endpoints support HTMX interactions:
+
+- `/ui/filter` - Updates search results based on filter changes
+- `/ui/content` - Loads content for different content type tabs
+- `/ui/citation/{index}` - Handles citation copy actions
 
 ## SDK Resources (Code Execution Mode)
 
@@ -635,14 +734,16 @@ flowchart TD
 
 ### Key Components
 
-1. **Input Validation**: Validates query length, domain whitelist, and parameter limits
+1. **Input Validation**: Validates query length, domain whitelist, and parameter limits with allowlists for sort_by and content_type
 2. **Rate Limiting**: Enforces 200ms minimum interval between DuckDuckGo API calls
 3. **Concurrent Search**: Searches up to 5 domains simultaneously with semaphore control
 4. **Context Enhancement**: Fetches actual page content and highlights relevant snippets
 5. **Relevance Scoring**: Calculates 0-100 scores based on keyword matches
 6. **JSON Output**: Returns structured data compatible with both AI agents and humans
-7. **SDK Generator** (New): Automatically generates TypeScript and Python SDKs from tool schemas
+7. **SDK Generator**: Automatically generates TypeScript and Python SDKs from tool schemas
 8. **MCP Resources**: Exposes generated SDKs as virtual filesystem resources for code execution workflows
+9. **MCP-UI Integration**: Renders interactive HTML interfaces with HTMX for dynamic filtering and tab navigation
+10. **Security Layer**: XSS prevention, URL validation, and ASGI protocol compliance
 
 ## Extending Domain Coverage
 
