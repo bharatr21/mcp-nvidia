@@ -10,6 +10,7 @@ CONTENT_TYPE_ICONS = {
     "course": "📚",
     "documentation": "📄",
     "blog_post": "📝",
+    "blog": "📝",  # Normalize blog content type
     "forum_discussion": "💬",
     "announcement": "📢",
     "research_paper": "🔬",
@@ -58,7 +59,8 @@ def render_filter_panel(
         <label class="mcp-nvidia-filter-label">Sort by:</label>
         <select class="mcp-nvidia-select" name="sort_by"
                 hx-get="/ui/filter" hx-target="#mcp-nvidia-results"
-                hx-trigger="change" hx-include="[name='min_relevance_score']">
+                hx-swap="outerHTML"
+                hx-trigger="change" hx-include="[name='min_relevance_score'], [name='query']">
           {sort_html}
         </select>
       </div>
@@ -69,7 +71,8 @@ def render_filter_panel(
           <input type="range" class="mcp-nvidia-range" name="min_relevance_score"
                  min="0" max="100" value="{min_relevance_score}"
                  hx-get="/ui/filter" hx-target="#mcp-nvidia-results"
-                 hx-trigger="change" hx-include="[name='sort_by']">
+                 hx-swap="outerHTML"
+                 hx-trigger="change" hx-include="[name='sort_by'], [name='query']">
           <span class="mcp-nvidia-range-value">{min_relevance_score}</span>
         </div>
       </div>
@@ -122,7 +125,7 @@ def render_result_card(result: dict[str, Any], index: int) -> str:
     <div class="mcp-nvidia-result-card">
       <div class="mcp-nvidia-result-header">
         <span class="mcp-nvidia-relevance-badge" style="--score: {score}%">{score}</span>
-        <a href="{safe_url}" target="_blank" class="mcp-nvidia-result-title">{escaped_title}</a>
+        <a href="{safe_url}" target="_blank" rel="noopener noreferrer" class="mcp-nvidia-result-title">{escaped_title}</a>
         <span class="mcp-nvidia-content-type">{icon} {escaped_content_type}</span>
       </div>
       <div class="mcp-nvidia-result-meta">
@@ -132,7 +135,7 @@ def render_result_card(result: dict[str, Any], index: int) -> str:
       <p class="mcp-nvidia-result-snippet">{escaped_snippet}</p>
       {keywords_section}
       <div class="mcp-nvidia-result-actions">
-        <a href="{safe_url}" target="_blank" class="mcp-nvidia-btn mcp-nvidia-btn-primary">→ Open</a>
+        <a href="{safe_url}" target="_blank" rel="noopener noreferrer" class="mcp-nvidia-btn mcp-nvidia-btn-primary">→ Open</a>
         <button class="mcp-nvidia-btn mcp-nvidia-btn-secondary"
                 hx-get="/ui/citation/{index}"
                 hx-target="#mcp-nvidia-citations"
@@ -146,10 +149,12 @@ def render_results_container(results: list[dict[str, Any]]) -> str:
     """Render all search results."""
     if not results:
         return """
-        <div class="mcp-nvidia-empty-state">
-          <div class="mcp-nvidia-empty-icon">🔍</div>
-          <div class="mcp-nvidia-empty-title">No results found</div>
-          <div class="mcp-nvidia-empty-message">Try adjusting your search query or filters</div>
+        <div class="mcp-nvidia-results-container" id="mcp-nvidia-results">
+          <div class="mcp-nvidia-empty-state">
+            <div class="mcp-nvidia-empty-icon">🔍</div>
+            <div class="mcp-nvidia-empty-title">No results found</div>
+            <div class="mcp-nvidia-empty-message">Try adjusting your search query or filters</div>
+          </div>
         </div>
         """
 
@@ -164,7 +169,8 @@ def render_citations(citations: list[dict[str, Any]]) -> str:
 
     citation_items = []
     for c in citations:
-        # Escape all fields
+        # Escape all fields including number
+        num = html.escape(str(c.get("number", "")), quote=True)
         escaped_title = html.escape(c.get("title", ""), quote=True)
         escaped_domain = html.escape(c.get("domain", ""), quote=True)
 
@@ -174,11 +180,17 @@ def render_citations(citations: list[dict[str, Any]]) -> str:
             html.escape(url, quote=True) if url and url.lower().startswith(("http://", "https://", "mailto:")) else ""
         )
 
+        # Build link or span based on URL presence
+        if safe_url:
+            link_html = f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" class="mcp-nvidia-citation-link">{escaped_domain}</a>'
+        else:
+            link_html = f'<span class="mcp-nvidia-citation-link">{escaped_domain}</span>'
+
         citation_items.append(f"""
         <div class="mcp-nvidia-citation">
-          <span class="mcp-nvidia-citation-number">[{c['number']}]</span>
+          <span class="mcp-nvidia-citation-number">[{num}]</span>
           <span>{escaped_title}</span>
-          <a href="{safe_url}" target="_blank" class="mcp-nvidia-citation-link">{escaped_domain}</a>
+          {link_html}
         </div>
         """)
 
@@ -247,7 +259,7 @@ def render_content_card(content: dict[str, Any]) -> str:
     <div class="mcp-nvidia-content-card">
       <div class="mcp-nvidia-content-thumbnail">{icon}</div>
       <div class="mcp-nvidia-content-info">
-        <a href="{safe_url}" target="_blank" class="mcp-nvidia-content-title">{escaped_title}</a>
+        <a href="{safe_url}" target="_blank" rel="noopener noreferrer" class="mcp-nvidia-content-title">{escaped_title}</a>
         <div class="mcp-nvidia-content-domain">{escaped_domain} · <span class="mcp-nvidia-content-score">Score: {relevance_score}</span></div>
         <p class="mcp-nvidia-content-snippet">{escaped_snippet}</p>
       </div>
@@ -268,10 +280,12 @@ def render_content_container(content: list[dict[str, Any]]) -> str:
     """Render all content discovery results."""
     if not content:
         return """
-        <div class="mcp-nvidia-empty-state">
-          <div class="mcp-nvidia-empty-icon">📭</div>
-          <div class="mcp-nvidia-empty-title">No content found</div>
-          <div class="mcp-nvidia-empty-message">Try a different content type or topic</div>
+        <div class="mcp-nvidia-results-container" id="mcp-nvidia-content-results">
+          <div class="mcp-nvidia-empty-state">
+            <div class="mcp-nvidia-empty-icon">📭</div>
+            <div class="mcp-nvidia-empty-title">No content found</div>
+            <div class="mcp-nvidia-empty-message">Try a different content type or topic</div>
+          </div>
         </div>
         """
 

@@ -18,20 +18,19 @@ from mcp_nvidia.server import app as mcp_app
 
 logger = logging.getLogger(__name__)
 
+# Maximum citation index to prevent out-of-range requests
+MAX_CITATION = 1000
 
 # Create SSE transport
 sse = SseServerTransport("/messages/")
 
 
-async def handle_sse(request: Request) -> Response:
-    """Handle SSE connections for MCP."""
+async def handle_sse(scope, receive, send):
+    """Handle SSE connections for MCP (raw ASGI callable)."""
     logger.info("New SSE connection established")
 
-    async with sse.connect_sse(request.scope, request.receive, request.scope["send"]) as (read_stream, write_stream):
+    async with sse.connect_sse(scope, receive, send) as (read_stream, write_stream):
         await mcp_app.run(read_stream, write_stream, mcp_app.create_initialization_options())
-
-    # Return a dummy response to satisfy type checker, though SSE session keeps connection open
-    return Response()
 
 
 async def health_check(request: Request) -> Response:
@@ -52,16 +51,30 @@ async def handle_ui_filter(request: Request) -> HTMLResponse:
     query = request.query_params.get("query", "")
     sort_by = request.query_params.get("sort_by", "relevance")
 
-    # Validate min_relevance_score input
+    # Validate sort_by against allowlist
+    valid_sort_options = {"relevance", "date", "domain"}
+    if sort_by not in valid_sort_options:
+        sort_by = "relevance"
+
+    # Validate and clamp min_relevance_score to 0-100 range
     try:
         min_relevance_score = int(request.query_params.get("min_relevance_score", "17"))
+        min_relevance_score = max(0, min(min_relevance_score, 100))
     except (ValueError, TypeError):
         min_relevance_score = 17
 
+    # Handle missing UI dependencies gracefully
     try:
         from mcp_nvidia.lib import DEFAULT_DOMAINS, build_search_response_json, search_all_domains
         from mcp_nvidia.ui.renderer import render_filter_ui
+    except (ImportError, ModuleNotFoundError):
+        logger.warning("UI dependencies not available")
+        return HTMLResponse(
+            "<div class='mcp-nvidia-error'>UI features not available. Install with: pip install mcp-nvidia[ui]</div>",
+            status_code=501,
+        )
 
+    try:
         results, errors, warnings, timing_info = await search_all_domains(
             query=query,
             domains=None,
@@ -133,12 +146,25 @@ async def handle_ui_content(request: Request) -> HTMLResponse:
 
 async def handle_citation(request: Request) -> HTMLResponse:
     """Handle citation copy requests."""
-    # Validate and parse citation index
+    # Validate citation index
     index_str = request.path_params.get("index")
+
+    if not index_str:
+        return HTMLResponse(
+            "<div class='mcp-nvidia-error'>Citation index is required</div>",
+            status_code=400,
+        )
+
     try:
-        citation_num = int(index_str) if index_str else 1
+        citation_num = int(index_str)
     except (ValueError, TypeError):
-        citation_num = 1
+        return HTMLResponse(
+            "<div class='mcp-nvidia-error'>Invalid citation index</div>",
+            status_code=400,
+        )
+
+    # Clamp citation_num to valid range
+    citation_num = max(1, min(citation_num, MAX_CITATION))
 
     citation_html = f"""
     <div class="mcp-nvidia-citation" hx-swap-oob="true" id="citation-{citation_num}">
