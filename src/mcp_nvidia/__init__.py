@@ -6,4 +6,4 @@ try:
     __version__ = importlib.metadata.version("mcp-nvidia")
 except importlib.metadata.PackageNotFoundError:
     # Package is not installed, use fallback version
-    __version__ = "0.2.5"
+    __version__ = "0.5.0"
