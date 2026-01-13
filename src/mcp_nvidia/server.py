@@ -24,6 +24,7 @@ from mcp_nvidia.lib import (
     build_error_response_json,
     build_search_response_json,
     build_tool_result,
+    build_tool_result_with_ui,
     discover_content,
     search_all_domains,
     validate_nvidia_domain,
@@ -488,10 +489,9 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     debug_info=timing_info.get("debug_info", {}),
                 )
 
-                return build_tool_result(response)
+                return build_tool_result_with_ui(response, tool_name="search_nvidia")
 
         elif name == "discover_nvidia_content":
-            # SECURITY: Use semaphore to limit concurrent searches
             async with _search_semaphore:
                 content_type = arguments.get("content_type")
                 topic = arguments.get("topic")
@@ -503,14 +503,12 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     )
                     return build_tool_result(error_response)
 
-                # SECURITY: Validate topic length (same as query validation)
                 if len(topic) > MAX_QUERY_LENGTH:
                     error_response = build_error_response_json(
                         "INVALID_PARAMETER", f"Topic too long. Maximum length: {MAX_QUERY_LENGTH} characters"
                     )
                     return build_tool_result(error_response)
 
-                # Validate date_from format if provided
                 if date_from:
                     try:
                         datetime.strptime(date_from, "%Y-%m-%d")  # noqa: DTZ007
@@ -522,19 +520,16 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
 
                 max_results = arguments.get("max_results", 5)
 
-                # SECURITY: Limit max_results to prevent resource exhaustion
                 if max_results > MAX_RESULTS_PER_DOMAIN:
                     logger.warning(f"max_results limited from {max_results} to {MAX_RESULTS_PER_DOMAIN}")
                     max_results = MAX_RESULTS_PER_DOMAIN
 
                 logger.info(f"Discovering {content_type} content for topic: {topic} (date_from={date_from})")
 
-                # Get results with error tracking
                 results, errors, warnings, timing_info = await discover_content(
                     content_type=content_type, topic=topic, max_results=max_results, date_from=date_from
                 )
 
-                # Build JSON response
                 response = build_content_response_json(
                     results=results,
                     content_type=content_type,
@@ -545,7 +540,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                     debug_info=timing_info.get("debug_info", {}),
                 )
 
-                return build_tool_result(response)
+                return build_tool_result_with_ui(response, tool_name="discover_nvidia_content")
 
         else:
             error_response = build_error_response_json("UNKNOWN_TOOL", f"Unknown tool: {name}")

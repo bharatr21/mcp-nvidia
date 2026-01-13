@@ -51,6 +51,9 @@ Issues = "https://github.com/bharatr21/mcp-nvidia/issues"
 Documentation = "https://github.com/bharatr21/mcp-nvidia#readme"
 
 [project.optional-dependencies]
+ui = [
+    "mcp-ui-server>=0.1.0",  # For MCP-UI integration with interactive HTML components
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
