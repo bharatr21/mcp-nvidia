@@ -33,7 +33,7 @@ def _parse_date(date_str: str) -> date | None:
 
     # Try ISO format first (most common and fastest)
     try:
-        return datetime.fromisoformat(date_str.split("T")[0]).date()
+        return datetime.fromisoformat(date_str.split("T", maxsplit=1)[0]).date()
     except (ValueError, AttributeError, TypeError):
         pass
 
