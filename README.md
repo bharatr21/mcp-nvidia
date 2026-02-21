@@ -235,6 +235,14 @@ A public instance is available at `https://mcp-nvidia.up.railway.app/`.
 }
 ```
 
+**Configure Claude Code for remote server:**
+
+```bash
+claude mcp add mcp-nvidia --transport sse https://mcp-nvidia.up.railway.app/sse/
+```
+
+Add `-s user` to make it available across all projects, or `-s project` for the current project only.
+
 ### MCP-UI (Interactive HTML Components)
 
 When installed with UI dependencies (`pip install "mcp-nvidia[ui]"`), the server provides rich, interactive HTML
