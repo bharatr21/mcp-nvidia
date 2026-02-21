@@ -222,11 +222,13 @@ mcp-nvidia  # same as stdio
 
 **Configure Claude AI for remote server:**
 
+A public instance is available at `https://mcp-nvidia.up.railway.app/`.
+
 ```json
 {
   "mcpServers": {
     "nvidia": {
-      "url": "https://your-server.com/sse",
+      "url": "https://mcp-nvidia.up.railway.app/sse",
       "transport": "sse"
     }
   }
