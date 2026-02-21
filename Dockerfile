@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "mcp-nvidia http --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "exec python -m uvicorn mcp_nvidia.http_server:http_app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
