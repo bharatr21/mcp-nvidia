@@ -228,7 +228,7 @@ A public instance is available at `https://mcp-nvidia.up.railway.app/`.
 {
   "mcpServers": {
     "nvidia": {
-      "url": "https://mcp-nvidia.up.railway.app/sse",
+      "url": "https://mcp-nvidia.up.railway.app/sse/",
       "transport": "sse"
     }
   }

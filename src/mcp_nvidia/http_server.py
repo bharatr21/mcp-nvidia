@@ -41,7 +41,7 @@ async def health_check(request: Request) -> Response:
             "service": "mcp-nvidia",
             "transport": "http-sse",
             "version": __version__,
-            "endpoints": {"sse": "/sse", "messages": "/messages/", "health": "/health"},
+            "endpoints": {"sse": "/sse", "messages": "/sse/messages/", "health": "/health"},
         }
     )
 
@@ -193,7 +193,7 @@ http_app = Starlette(
     debug=False,
     routes=[
         Mount("/sse", app=handle_sse),
-        Mount("/messages/", app=sse.handle_post_message),
+        Mount("/sse/messages", app=sse.handle_post_message),
         Route("/health", endpoint=health_check),
         Route("/", endpoint=health_check),
         Route("/ui/filter", endpoint=handle_ui_filter),
