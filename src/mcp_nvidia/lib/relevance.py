@@ -20,7 +20,10 @@ try:
         STOPWORDS = set(stopwords.words("english"))
     except LookupError:
         nltk.download("stopwords", quiet=True)
-        STOPWORDS = set(stopwords.words("english"))
+        try:
+            STOPWORDS = set(stopwords.words("english"))
+        except Exception:
+            STOPWORDS = STOPWORDS_FALLBACK
     except Exception:
         STOPWORDS = STOPWORDS_FALLBACK
 except ImportError:
