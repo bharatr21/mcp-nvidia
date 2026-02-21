@@ -192,7 +192,7 @@ async def handle_citation(request: Request) -> HTMLResponse:
 http_app = Starlette(
     debug=False,
     routes=[
-        Route("/sse", endpoint=handle_sse),
+        Mount("/sse", app=handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
         Route("/health", endpoint=health_check),
         Route("/", endpoint=health_check),
