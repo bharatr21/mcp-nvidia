@@ -133,7 +133,67 @@ pip install -e ".[ui]"
 
 ## Usage
 
-### Running the Server
+### Using the Hosted Remote Server (Recommended)
+
+A public instance is available at `https://mcp-nvidia.up.railway.app/` with the SSE endpoint at
+`https://mcp-nvidia.up.railway.app/sse/`. This is the fastest way to start using the server — no local
+install required.
+
+**Claude AI / Claude Desktop:**
+
+```json
+{
+  "mcpServers": {
+    "nvidia": {
+      "url": "https://mcp-nvidia.up.railway.app/sse/",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+**Claude Code:**
+
+```bash
+claude mcp add mcp-nvidia --transport sse https://mcp-nvidia.up.railway.app/sse/
+```
+
+Add `-s user` to make it available across all projects, or `-s project` for the current project only.
+
+**Gemini CLI:**
+
+```bash
+gemini mcp add --transport sse mcp-nvidia https://mcp-nvidia.up.railway.app/sse/
+```
+
+**OpenCode** (add to `opencode.json` or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mcp-nvidia": {
+      "type": "remote",
+      "url": "https://mcp-nvidia.up.railway.app/sse/"
+    }
+  }
+}
+```
+
+**Codex CLI** (Codex only supports stdio transport, so use the `mcp-remote` proxy):
+
+```bash
+codex mcp add mcp-nvidia -- npx -y mcp-remote https://mcp-nvidia.up.railway.app/sse/ --transport sse-only
+```
+
+Or add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mcp-nvidia]
+command = "npx"
+args = ["-y", "mcp-remote", "https://mcp-nvidia.up.railway.app/sse/", "--transport", "sse-only"]
+```
+
+### Running the Server Locally
 
 The MCP server can be run directly from the command line:
 
@@ -220,28 +280,9 @@ mcp-nvidia stdio
 mcp-nvidia  # same as stdio
 ```
 
-**Configure Claude AI for remote server:**
-
-A public instance is available at `https://mcp-nvidia.up.railway.app/`.
-
-```json
-{
-  "mcpServers": {
-    "nvidia": {
-      "url": "https://mcp-nvidia.up.railway.app/sse/",
-      "transport": "sse"
-    }
-  }
-}
-```
-
-**Configure Claude Code for remote server:**
-
-```bash
-claude mcp add mcp-nvidia --transport sse https://mcp-nvidia.up.railway.app/sse/
-```
-
-Add `-s user` to make it available across all projects, or `-s project` for the current project only.
+For configuring clients to connect to your self-hosted instance, replace
+`https://mcp-nvidia.up.railway.app/sse/` in the [hosted server examples](#using-the-hosted-remote-server-recommended)
+with your own server's SSE URL (e.g. `http://your-host:8000/sse/`).
 
 ### MCP-UI (Interactive HTML Components)
 
