@@ -3,7 +3,7 @@
 # Why mcp-nvidia does not cache page fetches
 
 - **Date:** 2026-09-12
-- **Status:** Decided — dedupe within a request; no cross-query cache
+- **Status:** Decided — no cross-query cache; move the existing dedupe ahead of scoring
 - **Context:** raised while scoping hybrid (keyword + embedding) search
 
 ## The question
@@ -67,11 +67,15 @@ A standards-respecting HTTP cache would store **nothing**. Caching would mean de
 
 ## Decision
 
-**Dedupe within a request. No cross-query cache.**
+**No cross-query cache. Move the existing dedupe ahead of scoring.**
 
-Dedupe was measured before committing to it too, and the result reframed why it's worth doing. Two default queries were run (15 domain searches × 3 results each, counted before any filtering). They produced **1 duplicate in 85 URL slots**: one `catalog.ngc.nvidia.com/...` page, returned by both the `catalog.ngc.nvidia.com` search and the `ngc.nvidia.com` search. The cause is subdomain overlap in the default domain list: `site:ngc.nvidia.com` also matches `catalog.ngc.nvidia.com`, just as `docs.nvidia.com` overlaps `docs.omniverse.nvidia.com` and `docs.api.nvidia.com`.
+Dedupe was measured before committing to it too, and the result reframed it. Two default queries were run (15 domain searches × 3 results each, counted before any filtering). They produced **1 duplicate in 85 URL slots**: one `catalog.ngc.nvidia.com/...` page, returned by both the `catalog.ngc.nvidia.com` search and the `ngc.nvidia.com` search. The cause is subdomain overlap in the default domain list: `site:ngc.nvidia.com` also matches `catalog.ngc.nvidia.com`, just as `docs.nvidia.com` overlaps `docs.omniverse.nvidia.com` and `docs.api.nvidia.com`.
 
-So dedupe is **not a performance optimisation**. It saves about one redundant fetch per query, and because domain searches run concurrently, that barely changes wall time. It is a **correctness fix**: without it, the same page appears twice in the results a client receives, and TF-IDF and rank fusion count it twice. It costs nothing, carries no staleness risk and overrides no origin directives, so it stays.
+Dedupe, it turned out, **already exists**. `deduplicate_results` (`src/mcp_nvidia/lib/deduplication.py`) drops exact-URL repeats and near-identical title-and-snippet pairs, so a client never saw that page twice. What is wrong is *when* it runs: after scoring and after the `min_relevance_score` cutoff. Duplicates are scored first, so TF-IDF counts them twice, and under rank fusion each copy would take its own rank position and skew every rank-derived score below it.
+
+The fix is to move the existing call so it runs before scoring. It is not a performance change: by that point the pages have already been fetched, so it saves no requests. It carries no staleness risk and overrides no origin directives.
+
+> **Correction.** An earlier draft of this record treated dedupe as new, said that without it clients would see the same page twice, and said it would save a redundant fetch. None of that held up. Reading the code showed dedupe already existed and already cleaned client output, and it runs after fetching, so it could never save a request. The real issue is only its position in the pipeline.
 
 A short-TTL in-process cache keyed by URL was considered and rejected *for now*. It would require overriding `no-store`, and measurement 2 gives no evidence that it would hit.
 
@@ -87,4 +91,4 @@ pgvector would matter for a *different* feature: maintaining an owned, crawled c
 
 ## The short version
 
-> Caching looked obvious because page fetches dominate query time. But the pages are fetched per-URL, and measurement showed near-zero URL recurrence across queries, while every sampled origin sends `no-store` or `must-revalidate`. So a cache would have had a near-zero hit rate *and* required overriding the sites' explicit caching directives. What survived was deduplicating repeat URLs within a single request. Measuring that as well showed it isn't a speedup at all: duplicates come from overlapping subdomains in the domain list, about one in 85 results, so dedupe is a correctness fix that stops the same page being listed and scored twice.
+> Caching looked obvious because page fetches dominate query time. But the pages are fetched per-URL, and measurement showed near-zero URL recurrence across queries, while every sampled origin sends `no-store` or `must-revalidate`. So a cache would have had a near-zero hit rate *and* required overriding the sites' explicit caching directives. What survived was a smaller fix. The server already deduplicated results, but only after scoring them, so duplicates from overlapping subdomains, about one in 85 results, were counted twice. Moving that existing step ahead of scoring fixes it.

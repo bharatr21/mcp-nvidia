@@ -34,8 +34,9 @@ breaking 1.0.0 release that follows.
 - Candidates with no keyword match and low semantic similarity are dropped before
   ranking, and `min_relevance_score` then applies to the fused ranking. Queries with
   only weak matches can return fewer results.
-- A page is no longer listed twice when overlapping domains both return it (for example
-  `ngc.nvidia.com` and `catalog.ngc.nvidia.com`).
+- Duplicate results are removed before ranking instead of after the relevance cutoff, so a
+  page returned by two overlapping domains (for example `ngc.nvidia.com` and
+  `catalog.ngc.nvidia.com`) is no longer scored twice.
 
 ### Fixed
 

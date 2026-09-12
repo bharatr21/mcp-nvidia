@@ -62,7 +62,7 @@ Step 3 already combines two signals measured in incomparable units, using a hand
 | 7 | Load lazily, exactly once, under a lock; encode in a worker thread | Import and stdio startup are unaffected, and concurrent first queries still trigger only one load. Encoding is 0.6–3 s of synchronous CPU work that would otherwise freeze the event loop for every client. |
 | 8 | Prefetch weights in the Docker build; download lazily for pip installs | Avoids a ~10 s download on every container cold start. |
 | 9 | On failure, rank on the remaining signals and report it in `warnings` | Degraded ranking shows up where clients already look. |
-| 10 | Deduplicate URLs within a request | A correctness fix: overlapping subdomains return the same page twice. |
+| 10 | Move the existing `deduplicate_results` call ahead of scoring, instead of after the cutoff | It already keeps duplicates out of client output, but it runs after scoring. So TF-IDF counts a duplicate twice, and under rank fusion each copy would take its own rank position and skew the scores below it. |
 | 11 | Evaluate with a comparison script first, then with labeled fixtures | Labels come from judging real disagreements between rankings, not from an imagined ideal order. |
 | 12 | Evidence floor before fusion: drop candidates with no keyword match *and* semantic similarity below τ | Rank-derived scores are relative; without a floor, an all-junk query still returns ~83% of its candidates. τ comes from measurement, not a guess. |
 | 13 | "Extra not installed" is a supported mode with no per-query warning | Warnings are reserved for an installed extra that fails, so they keep their meaning. |
@@ -103,7 +103,7 @@ The top result scores 100; with `n = 45`, the last scores 2.
 
 `search_all_domains` keeps its signature and its return shape. After results are gathered:
 
-1. Deduplicate (§7).
+1. Deduplicate with the existing `deduplicate_results` (§7), moved here from after the cutoff.
 2. Keyword scores from `calculate_search_relevance`, unchanged and still domain-boosted, turned into a ranking.
 3. TF-IDF scores from `calculate_tfidf_scores`, unchanged, turned into a ranking.
 4. `semantic_rank` (§5), which returns a ranking or reports itself unavailable.
@@ -123,7 +123,9 @@ Rank-derived scores are relative. On their own, `min_relevance_score = 17` would
 Edge cases:
 
 - **Semantic ranking unavailable:** the floor uses keyword evidence alone.
-- **The query yields no keywords** (for example, it is all stopwords): `extract_keywords` returns nothing and every keyword score is 0, so the keyword condition is skipped. Otherwise the floor would drop every candidate.
+- **The query yields no keywords** (for example, it is all stopwords): `extract_keywords` returns nothing and every keyword score is 0, so keyword evidence is ignored rather than counted as missing. With semantic ranking available, the floor gates on similarity alone; without it, every candidate is kept. Treating the zero scores as missing evidence would drop every candidate.
+
+`semantic_rank` returns the similarity values as well as the order (`SemanticRanking.similarities`, §5), because the floor compares values against τ.
 
 τ is not guessed. The eval script measures bge-small's similarity distribution on real results, and τ is set from that measurement before release. It is a named constant in `fusion.py`, next to `RRF_K`, and the script reports how many candidates the floor removes.
 
@@ -152,8 +154,9 @@ A new module, `src/mcp_nvidia/lib/embeddings.py`:
 ```python
 @dataclass(frozen=True)
 class SemanticRanking:
-    order: list[int] | None       # candidate indices, most similar first
-    unavailable: str | None       # reason when order is None
+    order: list[int] | None              # candidate indices, most similar first
+    similarities: list[float] | None     # cosine similarity per candidate, aligned to the input
+    unavailable: str | None              # reason when order is None
 
 async def semantic_rank(query: str, results: Sequence[Mapping[str, Any]]) -> SemanticRanking: ...
 ```
@@ -209,9 +212,13 @@ The warning entry follows the shape of existing warnings. `outputSchema` types `
 
 ## 7. Deduplication
 
-Runs after gathering and before scoring. The key is the URL with its scheme and host lowercased, its fragment removed and any trailing slash stripped. The first occurrence wins, in domain order.
+**Deduplication already exists; this design only moves it.** `deduplicate_results` (`src/mcp_nvidia/lib/deduplication.py`) drops exact-URL repeats, and drops results whose title (similarity ≥ 0.85) and snippet (≥ 0.90) are both near-identical, keeping the first occurrence. `search_all_domains` currently calls it *after* scoring and after the `min_relevance_score` cutoff, so client output is already free of duplicates.
 
-Measured duplicate rate: 1 in 85 URL slots. Duplicates come from `site:` matching subdomains: `ngc.nvidia.com` also matches `catalog.ngc.nvidia.com`, and `docs.nvidia.com` also matches `docs.omniverse.nvidia.com`. This is a correctness fix, not a performance one.
+The problem is ordering. Duplicates are scored before they are removed. TF-IDF counts them twice, and under rank fusion each copy would take its own rank position, which skews every rank-derived score below it. The existing call moves to run immediately after gathering, before any scoring. The function itself is not changed.
+
+Measured duplicate rate: 1 in 85 URL slots. Duplicates come from `site:` matching subdomains: `ngc.nvidia.com` also matches `catalog.ngc.nvidia.com`, and `docs.nvidia.com` also matches `docs.omniverse.nvidia.com`.
+
+> **Correction.** An earlier draft of this spec proposed a new, URL-normalizing dedupe and said duplicates reached clients. Reading the code showed that an existing dedupe already removes them from output. The real fix is where that step sits in the pipeline.
 
 ## 8. Evaluation and testing
 
@@ -236,7 +243,7 @@ Options: `--rrf-k` (sweeps 5, 10, 20, 30), `--model`, and `--no-embeddings`. The
 
 - `fusion.py`: small known rankings, tie-breaking, the effect of `k`, one, two and three signals, and exclusion of error results.
 - Evidence floor: candidates that survive on keyword evidence alone, candidates that survive on semantic similarity alone, candidates with neither are dropped, a keywordless query skips the keyword condition, and unavailable semantics fall back to keyword evidence.
-- Deduplication key normalization.
+- Dedupe ordering: a page returned by two domain searches is scored once, and fused positions count only unique candidates.
 - `embeddings.py`:
   - concurrent first calls load the model only once (several threads racing a deliberately slow fake loader);
   - a load failure is remembered;
@@ -254,7 +261,6 @@ These all go into the 0.9.0 CHANGELOG entry:
 - `min_relevance_score` now cuts the fused ranking, after an evidence floor removes candidates with no keyword match and low semantic similarity. Queries with only weak matches can return fewer results.
 - The new optional extra `[embeddings]` and its environment variables.
 - The new warning code `SEMANTIC_RANKING_UNAVAILABLE`.
-- Duplicate URLs are no longer listed twice.
 
 ## 10. Risks
 
