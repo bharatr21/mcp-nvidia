@@ -2,6 +2,27 @@
 
 MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA-specific queries.
 
+> ## ⚠️ Upgrade notice: 1.0.0 is a breaking release
+>
+> The current release line (**0.9.x**) runs on the `mcp` **1.x** SDK and is pinned to
+> `mcp>=1.28,<2.0.0`. The next release, **1.0.0, is not backward compatible**: it requires
+> the `mcp` **2.x** SDK (`mcp>=2.2.0,<3`) and the `2026-07-28` protocol revision.
+>
+> What changes when you upgrade to 1.0.0:
+>
+> - **Remote URL and transport.** `/sse` is removed and returns `410 Gone`. Use `/mcp`
+>   with `"transport": "http"` instead of `"transport": "sse"`.
+> - **SDK requirement.** 1.0.0 will not run on `mcp` 1.x, and 0.9.x will not run on
+>   `mcp` 2.x. The two SDK majors cannot coexist in one environment.
+> - **Resource errors** return `-32602` instead of `-32002`.
+> - **Self-hosted remote deployments** must allow their public hostname via
+>   `RAILWAY_PUBLIC_DOMAIN` or `MCP_ALLOWED_HOSTS`, or requests get `421`.
+>
+> Clients speaking the older 2025-era protocol are still served by 1.0.0 on the same
+> `/mcp` endpoint, so the server can upgrade before its clients do.
+>
+> To stay on this line: `pip install "mcp-nvidia<1.0.0"`
+
 ## Overview
 
 This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to search across

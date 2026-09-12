@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-12
+
+This is a compatibility release. It contains no feature changes — it exists to pin the
+MCP SDK so existing installs keep working, and to give notice of the breaking 1.0.0
+release that follows.
+
+### Fixed
+
+- Pinned the MCP SDK to `mcp>=1.28,<2.0.0`. The previous requirement, `mcp>=1.1.0`, has
+  no upper bound, so a fresh `pip install mcp-nvidia` now resolves to `mcp` 2.2.0 — an
+  SDK that removed the decorator handler API this release is built on. Installs that
+  picked up `mcp` 2.x would fail at import. Verified against `mcp` 1.30.0, the latest 1.x.
+
+### ⚠️ Notice: 1.0.0 will be a breaking release
+
+**mcp-nvidia 1.0.0 is not backward compatible with 0.x.** It requires the `mcp` 2.x SDK
+(`mcp>=2.2.0,<3`) and the `2026-07-28` protocol revision. If you upgrade, expect all of
+the following to change:
+
+- **The remote transport moves.** The SSE endpoint `/sse` is removed and returns
+  `410 Gone`. Remote clients must point at `/mcp` and use `"transport": "http"` instead
+  of `"transport": "sse"`.
+- **The SDK requirement flips.** 1.0.0 requires `mcp>=2.2.0` and will not run on `mcp` 1.x,
+  just as 0.9.0 will not run on `mcp` 2.x. The two cannot be installed together.
+- **An error code changes.** An invalid or unknown resource URI returns `-32602`
+  (Invalid Params) instead of `-32002`.
+- **Remote deployments need a host allow-list.** The server enables DNS-rebinding
+  protection; a public deployment must advertise its hostname via `RAILWAY_PUBLIC_DOMAIN`
+  (automatic on Railway) or `MCP_ALLOWED_HOSTS`, or requests are rejected with `421`.
+
+Clients on the 2025-era protocol are still served by 1.0.0 over the same `/mcp` endpoint,
+so upgrading the server does not force every client to upgrade at once.
+
+**To stay on the 0.x line**, pin the package rather than the SDK:
+
+```bash
+pip install "mcp-nvidia<1.0.0"
+```
+
 ## [0.4.0] - 2025-11-16
 
 ### Added
