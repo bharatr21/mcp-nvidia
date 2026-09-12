@@ -1,8 +1,25 @@
 """Test MCP Resources functionality."""
 
 import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
 
-from mcp_nvidia.server import list_resources, read_resource
+from mcp_nvidia.server import app, list_resources, read_resource
+
+
+@pytest.mark.asyncio
+async def test_read_resource_over_the_protocol():
+    """Regression: the SDK passes params.uri as a pydantic AnyUrl, not a str.
+
+    Every other test in this file calls read_resource() directly with a Python
+    string, which bypasses the protocol layer entirely, so none of them can catch
+    this. Before the fix, a real client got back:
+    "'AnyUrl' object has no attribute 'startswith'".
+    """
+    async with create_connected_server_and_client_session(app) as session:
+        result = await session.read_resource("mcp-nvidia://sdk/python/search_nvidia.py")
+
+    assert result.contents[0].text
+    assert "def " in result.contents[0].text
 
 
 @pytest.mark.asyncio

@@ -623,8 +623,15 @@ async def list_resources() -> list[Resource]:
 
 
 @app.read_resource()
-async def read_resource(uri: str) -> str:
-    """Read SDK resource by URI."""
+async def read_resource(uri) -> str:
+    """Read SDK resource by URI.
+
+    The SDK hands this handler ``params.uri`` as a pydantic ``AnyUrl``, not a ``str``
+    (see ``Callable[[AnyUrl], ...]`` on the SDK's ``read_resource`` decorator), so it
+    is coerced before any string operation. Calling ``.startswith()`` on an ``AnyUrl``
+    raises ``AttributeError``, which reaches clients as an opaque JSON-RPC error.
+    """
+    uri = str(uri)
     logger.info(f"Reading resource: {uri}")
 
     if not uri.startswith("mcp-nvidia://sdk/"):
