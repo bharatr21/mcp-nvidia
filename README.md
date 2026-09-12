@@ -134,6 +134,17 @@ pip install mcp-nvidia
 pip install "mcp-nvidia[ui]"
 ```
 
+**With hybrid search (semantic ranking):**
+
+```bash
+pip install "mcp-nvidia[embeddings]"
+```
+
+This adds a small local embedding model (`BAAI/bge-small-en-v1.5`, about 67 MB, downloaded on the
+first search, with no torch or API key required), so `search_nvidia` ranks results by meaning as
+well as by keywords. Without it, search ranks on keyword matching and TF-IDF. Optional settings:
+`MCP_NVIDIA_EMBEDDING_MODEL` and `MCP_NVIDIA_EMBEDDING_THREADS`.
+
 ### From source
 
 **Standard installation:**
