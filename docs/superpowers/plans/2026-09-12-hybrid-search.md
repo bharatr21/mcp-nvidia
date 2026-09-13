@@ -1,71 +1,88 @@
 <!-- markdownlint-disable MD013 -->
 
-# Hybrid Search (Keyword + Semantic) Implementation Plan
+# Hybrid Search (BM25 + Semantic) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rank `search_nvidia` results by fusing keyword, TF-IDF and (optionally) local-embedding similarity rankings with reciprocal rank fusion, behind an evidence floor, for the 0.9.0 release.
+**Goal:** Rank `search_nvidia` results by fusing a BM25 lexical ranking with an optional local-embedding similarity ranking via reciprocal rank fusion, behind an evidence floor, for the 0.9.0 release.
 
-**Architecture:** Two new pure-ish modules — `lib/fusion.py` (rank fusion, evidence floor, rank-derived scores; no I/O) and `lib/embeddings.py` (lazy, load-once fastembed model; encoding off the event loop; explicit failure reasons). `search_all_domains` keeps its signature and return shape: it moves the existing dedupe ahead of scoring and replaces the fixed 70/30 blend with a call to a new `_rank_candidates`. Everything is testable offline through two patched network seams.
+**Architecture:** Three new modules:
 
-**Tech Stack:** Python ≥3.10, `mcp` 1.x SDK (1.30.0 installed), fastembed 0.8 (onnxruntime, no torch) as an optional extra, numpy (already present via scikit-learn), pytest + pytest-asyncio (`asyncio_mode = "auto"`), hatchling, GitHub Actions, Docker.
+- `lib/lexical.py` — BM25 over title and snippet, with stemming and Lucene IDF. Pure; no I/O.
+- `lib/fusion.py` — rank fusion, the evidence floor and rank-derived scores. Pure; no I/O.
+- `lib/embeddings.py` — a fastembed model loaded lazily and only once; encoding runs off the event loop and reports explicit failure reasons.
 
-**Spec:** `docs/superpowers/specs/2026-09-12-hybrid-search-design.md` (approved 2026-09-12). Background measurements: `docs/decisions/2026-09-12-no-page-fetch-cache.md`.
+`search_all_domains` keeps its signature and return shape. It moves the existing dedupe ahead of scoring and replaces the keyword heuristic, TF-IDF and their fixed 70/30 blend with a call to a new `_rank_candidates`. Everything is testable offline through two patched network seams.
+
+**Tech Stack:** Python ≥3.10; the `mcp` 1.x SDK (1.30.0 installed); fastembed 0.8 (onnxruntime, no torch) as an optional extra; nltk's Porter stemmer (nltk is already a dependency); numpy (already present via scikit-learn); pytest with pytest-asyncio (`asyncio_mode = "auto"`); hatchling; GitHub Actions; Docker.
+
+**Spec:** `docs/superpowers/specs/2026-09-12-hybrid-search-design.md` (approved 2026-09-12, revised the same day for BM25). Background measurements: `docs/decisions/2026-09-12-no-page-fetch-cache.md`.
 
 ## Global Constraints
 
 Every task's requirements implicitly include these.
 
-- **Where:** branch `chore/pin-mcp-v1` (PR #8, draft). Run every command from the repo root of that checkout (locally: `.claude/worktrees/release-0.9.0`) using its venv: `.venv/bin/pytest`, `.venv/bin/python`, `.venv/bin/ruff`.
-- **SDK stays 1.x:** do not change `mcp>=1.28,<2.0.0`. Python floor `>=3.10`.
-- **Baseline before this plan:** `.venv/bin/pytest tests/ -q` → **48 passed, 11 skipped** (mcp 1.30.0). The 11 skips are `tests/test_client.py` needing an installed `mcp-nvidia` binary.
-- **Optional extra:** `embeddings = ["fastembed>=0.8,<0.9"]`. The base install must keep working with no fastembed: nothing imports fastembed at module import time.
-- **Model:** `BAAI/bge-small-en-v1.5`. Env vars: `MCP_NVIDIA_EMBEDDING_MODEL` (default that model), `MCP_NVIDIA_EMBEDDING_THREADS` (default `4`), plus fastembed's own `FASTEMBED_CACHE_PATH`. Read with `os.getenv`, matching `MCP_NVIDIA_DOMAINS` and `MCP_NVIDIA_LOG_LEVEL`.
-- **Encode the query with `query_embed`, documents with `embed`.** bge is asymmetric; using `embed` for both quietly weakens matching.
-- **Model loads lazily, exactly once per process, under a `threading.Lock`.** Threads arriving during a load wait on the lock. Load failures are remembered for the process lifetime. Loading and encoding both run via `asyncio.to_thread`; encoding has a 10 s timeout.
-- **Fusion:** `RRF_K = 10`; ranks are 1-based inside the formula `1 / (k + rank)`; ties broken by original candidate index.
-- **Score:** `relevance_score = round(100 * (n - p) / n)` for 0-based fused position `p` among `n` surviving candidates. Still a required `integer` in the output schema.
-- **Evidence floor (exact semantics):** with similarities available, keep a candidate iff `keyword_score > 0` (and the query has keywords) **or** `similarity >= τ`. Without similarities, keep iff `keyword_score > 0`, or keep all if the query has no keywords. `τ` is `EVIDENCE_FLOOR_TAU` in `fusion.py`: provisional `0.5` until Task 5 replaces it with a measured value.
-- **Warning** — appended to `warnings` **only** when semantics are installed but fail (`model_load_failed`, `encode_failed`), never for `not_installed`:
+- **Where:** branch `chore/pin-mcp-v1` (PR #8, draft). Run every command from the repo root of that checkout (locally, `.claude/worktrees/release-0.9.0`) with its venv: `.venv/bin/pytest` and `.venv/bin/python`. Ruff is not installed in the venv, so run the version pre-commit pins: `uv tool run ruff@0.8.4`.
+- **The SDK stays on 1.x:** do not change `mcp>=1.28,<2.0.0`. Python floor is `>=3.10`.
+- **Baseline before this plan:** `.venv/bin/pytest tests/ -q` → **48 passed, 11 skipped** (mcp 1.30.0). The 11 skips are in `tests/test_client.py`, which needs an installed `mcp-nvidia` binary.
+- **Optional extra:** `embeddings = ["fastembed>=0.8,<0.9"]`. The base install must keep working without fastembed, so nothing may import it at module import time.
+- **BM25 (exact):**
+  - Tokenize: lowercase; split on every run of characters that are not `[0-9a-z]`; drop tokens shorter than 2 characters, tokens with no letter, and anything in `STOPWORDS` from `mcp_nvidia.lib.relevance`; Porter-stem the rest.
+  - A document is its title tokens repeated `TITLE_WEIGHT = 2` times, then the tokens of `snippet_plain` (or `snippet` with `**` removed). URLs are not indexed.
+  - Query terms: every distinct stem from the original query weighs `1.0`; stems that appear only in the expanded query weigh `EXPANSION_TERM_WEIGHT = 0.5`.
+  - `idf(t) = ln(1 + (N − df + 0.5) / (df + 0.5))` (Lucene form, never negative). `bm25(d) = Σ w(t) · idf(t) · tf · (k1 + 1) / (tf + k1 · (1 − b + b · |d| / avgdl))`, with `k1 = 1.2` and `b = 0.75`. `N`, `df` and `avgdl` come from this query's deduplicated candidates.
+  - `lexical_score = bm25 × get_domain_boost(domain, expanded_query)`.
+- **Model:** `BAAI/bge-small-en-v1.5`. Env vars: `MCP_NVIDIA_EMBEDDING_MODEL` (defaults to that model), `MCP_NVIDIA_EMBEDDING_THREADS` (default `4`), and fastembed's own `FASTEMBED_CACHE_PATH`. Read them with `os.getenv`, like `MCP_NVIDIA_DOMAINS` and `MCP_NVIDIA_LOG_LEVEL`.
+- **Semantic ranking embeds the user's original query**, not the expanded one: expansion variants such as `tensor rt trt` only add noise to an embedding. Encode the query with `query_embed` and documents with `embed`; bge is asymmetric.
+- **The model loads lazily, exactly once per process, under a `threading.Lock`.** Threads that arrive during a load wait on the lock. A load failure is remembered for the lifetime of the process. Loading and encoding both run via `asyncio.to_thread`, and encoding has a 10 s timeout.
+- **Fusion:** `RRF_K = 30`, provisional until Task 6 measures it. Ranks are 1-based inside `1 / (k + rank)`, and ties are broken by original candidate index.
+- **Score:** `relevance_score = round(100 * (n - p) / n)` for 0-based fused position `p` among `n` surviving candidates. It remains a required `integer` in the output schema.
+- **Evidence floor (exact semantics):**
+  - With similarities available, keep a candidate if its lexical score is `> 0` (and the query has terms), **or** if its similarity is `>= τ`.
+  - Without similarities, keep it if its lexical score is `> 0`. If the query has no terms, keep every candidate.
+  - `τ` is `EVIDENCE_FLOOR_TAU` in `fusion.py`: a provisional `0.5` until Task 6 replaces it with a measured value.
+- **Warning:** append this to `warnings` **only** when semantics are installed but fail (`model_load_failed` or `encode_failed`), never for `not_installed`:
 
   ```json
-  {"code": "SEMANTIC_RANKING_UNAVAILABLE", "message": "Semantic ranking unavailable; results ranked by keyword and TF-IDF only", "reason": "model_load_failed"}
+  {"code": "SEMANTIC_RANKING_UNAVAILABLE", "message": "Semantic ranking unavailable; results ranked by BM25 only", "reason": "model_load_failed"}
   ```
 
-- **Do not modify** `lib/relevance.py`, `lib/deduplication.py`, `discover_nvidia_content`, or the signature/return shape of `search_all_domains`.
-- **Tests never touch the network.** Patch `mcp_nvidia.lib.search._fetch_ddgs_results` and `mcp_nvidia.lib.search.fetch_url_context` (the names *as imported into* `search.py`).
-- **Test at the protocol layer for request/response behaviour** — through `mcp.shared.memory.create_connected_server_and_client_session`. A handler called directly with a Python string hid an `AnyUrl` crash through a fully green suite on this very branch.
-- **Never wrap an MCP client session in an async yield fixture** — pytest-asyncio tears fixtures down in a different task, which breaks anyio cancel scopes. Enter sessions with `async with` inside the test body. (Plain sync fixtures, like `monkeypatch`, are fine.)
-- **Do not undraft or merge PR #8.** Railway deploys production from `main`; that decision is the user's, after Task 7.
-- **Commit attribution** — every commit message ends with:
+- **Do not modify** `lib/relevance.py`, `lib/deduplication.py`, `discover_nvidia_content`, or the signature and return shape of `search_all_domains`. `discover_nvidia_content` still uses `calculate_tfidf_scores`. Search stops importing `calculate_search_relevance` and `calculate_tfidf_scores`, but both stay in `relevance.py` and in `mcp_nvidia.lib`'s exports.
+- **Tests never touch the network.** Patch `mcp_nvidia.lib.search._fetch_ddgs_results` and `mcp_nvidia.lib.search.fetch_url_context`, the names *as imported into* `search.py`.
+- **Test request/response behaviour at the protocol layer**, through `mcp.shared.memory.create_connected_server_and_client_session`. On this very branch, a handler called directly with a Python string hid an `AnyUrl` crash through a fully green suite.
+- **Never wrap an MCP client session in an async yield fixture.** pytest-asyncio tears fixtures down in a different task, which breaks anyio cancel scopes. Enter sessions with `async with` inside the test body. Plain sync fixtures such as `monkeypatch` are fine.
+- **Do not undraft or merge PR #8.** Railway deploys production from `main`, so that decision belongs to the user, after Task 8.
+- **Commit attribution:** every commit message ends with:
 
   ```text
   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_013FriD63a2waebg8Qmtscj6
   ```
 
-- Markdown outside `docs/superpowers/` is linted at 120 columns (markdownlint MD013 via pre-commit).
+- Markdown outside `docs/superpowers/` is linted at 120 columns (markdownlint MD013, via pre-commit).
 
 ## File Structure
 
 | File | Responsibility | Task |
 | --- | --- | --- |
-| `src/mcp_nvidia/lib/fusion.py` | **New.** Pure: `rank_by_score`, `reciprocal_rank_fusion`, `relevance_from_position`, `apply_evidence_floor`, constants `RRF_K`, `EVIDENCE_FLOOR_TAU` | 1, 5 |
-| `src/mcp_nvidia/lib/embeddings.py` | **New.** Load-once model, `semantic_rank`, failure reasons, `build_document_text` | 2 |
-| `src/mcp_nvidia/lib/search.py` | Add `_rank_candidates`; move dedupe ahead of scoring; replace the 70/30 blend | 3 |
-| `src/mcp_nvidia/server.py` | Update two `outputSchema`/`inputSchema` descriptions | 3 |
-| `tests/search_fakes.py` | **New.** Offline fakes: `FakeEmbeddingModel`, `install_fake_search` | 2, 3 |
+| `src/mcp_nvidia/lib/fusion.py` | **New.** Pure: `rank_by_score`, `reciprocal_rank_fusion`, `relevance_from_position`, `apply_evidence_floor`; constants `RRF_K`, `EVIDENCE_FLOOR_TAU` | 1, 6 |
+| `src/mcp_nvidia/lib/lexical.py` | **New.** Pure: `tokenize`, `query_term_weights`, `document_tokens`, `bm25_scores`; constants `TITLE_WEIGHT`, `EXPANSION_TERM_WEIGHT`, `BM25_K1`, `BM25_B` | 2 |
+| `src/mcp_nvidia/lib/embeddings.py` | **New.** Load-once model, `semantic_rank`, failure reasons, `build_document_text` | 3 |
+| `src/mcp_nvidia/lib/search.py` | Add `_rank_candidates`; keep the original query; move dedupe ahead of scoring; replace the 70/30 blend | 4 |
+| `src/mcp_nvidia/server.py` | Update two schema descriptions | 4 |
+| `tests/search_fakes.py` | **New.** Offline fakes: `FakeEmbeddingModel`, `install_fake_search` | 3, 4 |
 | `tests/test_fusion.py` | **New.** Fusion unit tests | 1 |
-| `tests/test_embeddings.py` | **New.** Loader/encoder unit tests (no fastembed needed) | 2 |
-| `tests/test_search_pipeline.py` | **New.** Pipeline + protocol-level tests with patched network | 3 |
-| `tests/test_embeddings_model.py` | **New.** Real-model smoke test; skips without fastembed | 4 |
-| `pyproject.toml` | `[embeddings]` extra; ruff per-file ignore for `scripts/` if needed | 4, 5 |
-| `Dockerfile` | Install extra; bake model weights into the image | 4 |
-| `.github/workflows/test.yml` | New `embeddings` job | 4 |
-| `scripts/eval_ranking.py` | **New.** Live comparison: baseline vs hybrid, k sweep, τ measurement, fixture recording | 5 |
-| `tests/test_ranking_fixtures.py` | **New.** Labeled ranking regressions | 6 |
-| `tests/fixtures/ranking/*.json` | **New.** Recorded candidates + labels (human-judged) | 6 |
-| `CHANGELOG.md`, spec status | Final accuracy pass | 7 |
+| `tests/test_lexical.py` | **New.** BM25 unit tests | 2 |
+| `tests/test_embeddings.py` | **New.** Loader and encoder unit tests (no fastembed needed) | 3 |
+| `tests/test_search_pipeline.py` | **New.** Pipeline and protocol-level tests with the network patched out | 4 |
+| `tests/test_embeddings_model.py` | **New.** Real-model smoke test; skips without fastembed | 5 |
+| `pyproject.toml` | `[embeddings]` extra; ruff per-file ignore for `scripts/` if needed | 5, 6 |
+| `Dockerfile` | Install the extra; bake the model weights into the image | 5 |
+| `.github/workflows/test.yml` | New `embeddings` job | 5, 7 |
+| `scripts/eval_ranking.py` | **New.** Live comparison: baseline vs hybrid, per-term IDF, k sweep, τ measurement, fixture recording | 6 |
+| `tests/test_ranking_fixtures.py` | **New.** Labeled ranking regressions | 7 |
+| `tests/fixtures/ranking/*.json` | **New.** Recorded candidates plus human-judged labels | 6, 7 |
+| `CHANGELOG.md`, spec status line | Final accuracy pass | 8 |
 
 ---
 
@@ -82,12 +99,12 @@ Pure functions with no I/O: the whole ranking contract, testable in milliseconds
 
 - Consumes: nothing.
 - Produces (all in `mcp_nvidia.lib.fusion`):
-  - `RRF_K: int = 10`
-  - `EVIDENCE_FLOOR_TAU: float = 0.5` (provisional; Task 5 replaces the value)
+  - `RRF_K: int = 30` (provisional; Task 6 confirms or changes it)
+  - `EVIDENCE_FLOOR_TAU: float = 0.5` (provisional; Task 6 replaces the value)
   - `rank_by_score(scores: Sequence[float]) -> list[int]`
   - `reciprocal_rank_fusion(rankings: Sequence[Sequence[int]], k: int = RRF_K) -> list[int]`
   - `relevance_from_position(position: int, n: int) -> int`
-  - `apply_evidence_floor(keyword_scores: Sequence[int], similarities: Sequence[float] | None, tau: float = EVIDENCE_FLOOR_TAU, query_has_keywords: bool = True) -> list[int]`
+  - `apply_evidence_floor(lexical_scores: Sequence[float], similarities: Sequence[float] | None, tau: float = EVIDENCE_FLOOR_TAU, query_has_terms: bool = True) -> list[int]`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -107,8 +124,8 @@ from mcp_nvidia.lib.fusion import (
 )
 
 
-def test_rrf_k_is_ten_not_the_textbook_sixty():
-    assert RRF_K == 10
+def test_default_k_is_thirty_for_two_signals():
+    assert RRF_K == 30
 
 
 def test_rank_by_score_orders_best_first_and_keeps_ties_stable():
@@ -120,27 +137,28 @@ def test_single_ranking_passes_through_unchanged():
 
 
 def test_fusion_ties_break_by_original_index():
-    # k=10: candidate 0 and 2 both score 1/11 + 1/13; candidate 1 scores 2/12, which is lower.
+    # Candidates 0 and 2 score the same (1/31 + 1/33); candidate 1 scores 2/32, which is lower.
     assert reciprocal_rank_fusion([[0, 1, 2], [2, 1, 0]]) == [0, 2, 1]
 
 
-def test_k_decides_between_a_specialist_and_a_consensus_result():
-    # A (id 0): 1st in one signal, 45th in two. B (id 1): 15th in all three.
+def test_k_decides_between_a_strong_top_hit_and_agreement():
+    # Two signals over 45 candidates. A (id 0) is 1st in one signal and 45th in the other.
+    # B (id 1) is 15th in both. A narrowly wins at k=30; B wins at k=60.
     others = list(range(2, 45))
     first_signal = [0, *others[:13], 1, *others[13:]]
-    other_signals = [*others[:14], 1, *others[14:], 0]
-    assert len(first_signal) == len(other_signals) == 45
-    rankings = [first_signal, other_signals, other_signals]
+    second_signal = [*others[:14], 1, *others[14:], 0]
+    assert len(first_signal) == len(second_signal) == 45
+    rankings = [first_signal, second_signal]
 
-    with_k10 = reciprocal_rank_fusion(rankings, k=10)
+    with_k30 = reciprocal_rank_fusion(rankings, k=30)
     with_k60 = reciprocal_rank_fusion(rankings, k=60)
 
-    assert with_k10.index(0) < with_k10.index(1), "k=10 should let the specialist win"
-    assert with_k60.index(1) < with_k60.index(0), "k=60 should let the consensus result win"
+    assert with_k30.index(0) < with_k30.index(1), "k=30 should let the strong top hit win"
+    assert with_k60.index(1) < with_k60.index(0), "k=60 should let agreement win"
 
 
 def test_fusion_rejects_rankings_of_different_candidates():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="permutation"):
         reciprocal_rank_fusion([[0, 1, 2], [0, 1]])
 
 
@@ -154,29 +172,29 @@ def test_relevance_from_position():
     assert relevance_from_position(0, 1) == 100
 
 
-def test_floor_keeps_keyword_evidence_without_semantics():
-    assert apply_evidence_floor([5, 0], similarities=None) == [0]
+def test_floor_keeps_lexical_evidence_without_semantics():
+    assert apply_evidence_floor([1.5, 0.0], similarities=None) == [0]
 
 
-def test_floor_keeps_semantic_evidence_without_keywords():
-    assert apply_evidence_floor([0, 0], similarities=[0.9, 0.1], tau=0.5) == [0]
+def test_floor_keeps_semantic_evidence_without_lexical_match():
+    assert apply_evidence_floor([0.0, 0.0], similarities=[0.9, 0.1], tau=0.5) == [0]
 
 
 def test_floor_drops_candidates_with_neither():
-    assert apply_evidence_floor([3, 0, 0], similarities=[0.1, 0.8, 0.2], tau=0.5) == [0, 1]
+    assert apply_evidence_floor([2.0, 0.0, 0.0], similarities=[0.1, 0.8, 0.2], tau=0.5) == [0, 1]
 
 
-def test_keywordless_query_without_semantics_keeps_everything():
-    assert apply_evidence_floor([0, 0, 0], similarities=None, query_has_keywords=False) == [0, 1, 2]
+def test_termless_query_without_semantics_keeps_everything():
+    assert apply_evidence_floor([0.0, 0.0, 0.0], similarities=None, query_has_terms=False) == [0, 1, 2]
 
 
-def test_keywordless_query_with_semantics_gates_on_similarity_alone():
-    assert apply_evidence_floor([0, 0], similarities=[0.9, 0.2], tau=0.5, query_has_keywords=False) == [0]
+def test_termless_query_with_semantics_gates_on_similarity_alone():
+    assert apply_evidence_floor([0.0, 0.0], similarities=[0.9, 0.2], tau=0.5, query_has_terms=False) == [0]
 
 
 def test_floor_rejects_misaligned_similarities():
-    with pytest.raises(ValueError):
-        apply_evidence_floor([1, 2], similarities=[0.5])
+    with pytest.raises(ValueError, match="align"):
+        apply_evidence_floor([1.0, 2.0], similarities=[0.5])
 ```
 
 - [ ] **Step 2: Run the tests to confirm they fail**
@@ -198,12 +216,13 @@ smoothed Borda count rather than classic multi-system reciprocal rank fusion.
 
 from collections.abc import Sequence
 
-# Not the textbook 60, which was tuned on TREC lists of ~1000 documents. Our lists hold
-# ~45 candidates, where k=60 leaves only a 1.72x spread between first and last place.
-# k=10 gives 5x and lets one signal's strong top hit win, which known-item queries need.
-RRF_K = 10
+# Not the textbook 60, which was tuned on TREC lists of ~1000 documents. With two signals
+# (BM25 and semantic) over ~45 candidates, a result ranked first by one signal still beats
+# one ranked 15th by both up to k~35; from k~40 agreement wins. 30 sits just on the side
+# where a strong top hit can still win. Provisional: confirmed with scripts/eval_ranking.py.
+RRF_K = 30
 
-# Semantic similarity below which a candidate with no keyword match is dropped.
+# Semantic similarity below which a candidate matching no query term is dropped.
 # Provisional: replaced with a measured value from scripts/eval_ranking.py before release.
 EVIDENCE_FLOOR_TAU = 0.5
 
@@ -239,28 +258,28 @@ def relevance_from_position(position: int, n: int) -> int:
 
 
 def apply_evidence_floor(
-    keyword_scores: Sequence[int],
+    lexical_scores: Sequence[float],
     similarities: Sequence[float] | None,
     tau: float = EVIDENCE_FLOOR_TAU,
-    query_has_keywords: bool = True,
+    query_has_terms: bool = True,
 ) -> list[int]:
     """Indices of candidates with some evidence of relevance, in original order.
 
     Rank-derived scores are relative, so without this gate a query whose results are all
-    poor would still return most of them. A candidate is dropped only when it has no
-    keyword match and (when semantics are available) its similarity is below tau.
+    poor would still return most of them. A candidate is dropped only when it matches no
+    query term and (when semantics are available) its similarity is below tau.
     """
-    if similarities is not None and len(similarities) != len(keyword_scores):
-        raise ValueError("similarities must align with keyword_scores")
+    if similarities is not None and len(similarities) != len(lexical_scores):
+        raise ValueError("similarities must align with lexical_scores")
 
     kept = []
-    for index, keyword_score in enumerate(keyword_scores):
-        has_keyword_evidence = query_has_keywords and keyword_score > 0
+    for index, lexical_score in enumerate(lexical_scores):
+        has_lexical_evidence = query_has_terms and lexical_score > 0
         if similarities is None:
-            # A keywordless query offers no evidence to gate on, so nothing is dropped.
-            keep = has_keyword_evidence or not query_has_keywords
+            # A query with no terms offers no lexical evidence to gate on, so nothing is dropped.
+            keep = has_lexical_evidence or not query_has_terms
         else:
-            keep = has_keyword_evidence or similarities[index] >= tau
+            keep = has_lexical_evidence or similarities[index] >= tau
         if keep:
             kept.append(index)
     return kept
@@ -273,8 +292,8 @@ Expected: `14 passed`.
 
 - [ ] **Step 5: Lint**
 
-Run: `.venv/bin/ruff check src/mcp_nvidia/lib/fusion.py tests/test_fusion.py && .venv/bin/ruff format --check src/mcp_nvidia/lib/fusion.py tests/test_fusion.py`
-Expected: no findings. If `ruff check` reports fixable findings (such as import order), run `.venv/bin/ruff check --fix` on the two files; if `ruff format --check` reports a diff, run `.venv/bin/ruff format` on them. Re-run the tests after either.
+Run: `uv tool run ruff@0.8.4 check src/mcp_nvidia/lib/fusion.py tests/test_fusion.py && uv tool run ruff@0.8.4 format --check src/mcp_nvidia/lib/fusion.py tests/test_fusion.py`
+Expected: no findings. If `ruff check` reports fixable findings, such as import order, run `uv tool run ruff@0.8.4 check --fix` on the two files. If `ruff format --check` reports a diff, run `uv tool run ruff@0.8.4 format` on them. Re-run the tests after either.
 
 - [ ] **Step 6: Commit**
 
@@ -283,9 +302,9 @@ git add src/mcp_nvidia/lib/fusion.py tests/test_fusion.py
 git commit -F - <<'EOF'
 feat: Add rank fusion primitives for hybrid search
 
-Pure functions for reciprocal rank fusion (k=10), rank-derived relevance
-scores and the evidence floor, with unit tests including the k=10 vs k=60
-specialist/consensus crossover.
+Pure functions for reciprocal rank fusion (provisional k=30 for two
+signals), rank-derived relevance scores and the evidence floor, with
+unit tests including the k=30 vs k=60 crossover.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013FriD63a2waebg8Qmtscj6
@@ -294,9 +313,216 @@ EOF
 
 ---
 
-### Task 2: Semantic ranking module
+### Task 2: BM25 lexical scoring
 
-The load-once model, off-loop encoding and explicit failure reasons. Tested entirely with fakes: fastembed is **not** needed for this task.
+Replaces both the keyword heuristic and TF-IDF with one BM25 score. Pure and offline.
+
+**Files:**
+
+- Create: `src/mcp_nvidia/lib/lexical.py`
+- Test: `tests/test_lexical.py`
+
+**Interfaces:**
+
+- Consumes: `STOPWORDS` from `mcp_nvidia.lib.relevance` (read-only).
+- Produces (all in `mcp_nvidia.lib.lexical`):
+  - Constants: `TITLE_WEIGHT = 2`, `EXPANSION_TERM_WEIGHT = 0.5`, `BM25_K1 = 1.2`, `BM25_B = 0.75`. All are read at call time, so Task 6's script can override them.
+  - `tokenize(text: str) -> list[str]`
+  - `query_term_weights(original_query: str, expanded_query: str) -> dict[str, float]`
+  - `document_tokens(result: Mapping[str, Any]) -> list[str]`
+  - `bm25_scores(documents: Sequence[Sequence[str]], query_weights: Mapping[str, float]) -> list[float]`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_lexical.py`:
+
+```python
+"""Unit tests for BM25 lexical scoring."""
+
+import math
+
+from mcp_nvidia.lib.lexical import bm25_scores, document_tokens, query_term_weights, tokenize
+
+
+def test_tokenize_splits_punctuation_drops_noise_and_stems():
+    assert tokenize("CUDA Toolkit Downloads, GPU-accelerated profiling in the SDK 2.0 x") == [
+        "cuda",
+        "toolkit",
+        "download",
+        "gpu",
+        "acceler",
+        "profil",
+        "sdk",
+    ]
+
+
+def test_expansion_only_terms_weigh_half():
+    weights = query_term_weights("TensorRT inference optimization", "TensorRT inference optimization tensor rt trt")
+    assert weights == {"tensorrt": 1.0, "infer": 1.0, "optim": 1.0, "tensor": 0.5, "rt": 0.5, "trt": 0.5}
+
+
+def test_stopword_only_query_has_no_terms():
+    assert query_term_weights("how to do it", "how to do it") == {}
+
+
+def test_title_terms_count_twice():
+    result = {"title": "CUDA Guide", "snippet_plain": "memory pools"}
+    assert document_tokens(result) == tokenize("CUDA Guide") * 2 + tokenize("memory pools")
+
+
+def test_document_falls_back_to_snippet_without_highlight_markers():
+    result = {"title": "CUDA", "snippet": "**bold** text"}
+    assert document_tokens(result) == tokenize("CUDA") * 2 + tokenize("bold text")
+
+
+def test_idf_stays_positive_when_every_document_has_the_term():
+    scores = bm25_scores([["cuda"], ["cuda", "memori"]], {"cuda": 1.0})
+    assert all(score > 0 for score in scores)
+    # Lucene IDF for df = N = 2 is ln(1 + 0.5 / 2.5), which is positive.
+    assert math.log(1 + 0.5 / 2.5) > 0
+
+
+def test_document_without_query_terms_scores_zero():
+    assert bm25_scores([["cuda"], ["jetson"]], {"cuda": 1.0})[1] == 0.0
+
+
+def test_no_query_terms_scores_zero_everywhere():
+    assert bm25_scores([["cuda"], ["memori"]], {}) == [0.0, 0.0]
+
+
+def test_half_weight_lowers_a_rare_expansion_term_contribution():
+    documents = [["cuda", "trt"], ["cuda"], ["cuda"]]
+    full = bm25_scores(documents, {"cuda": 1.0, "trt": 1.0})[0]
+    half = bm25_scores(documents, {"cuda": 1.0, "trt": 0.5})[0]
+    assert half < full
+
+
+def test_no_documents_is_empty():
+    assert bm25_scores([], {"cuda": 1.0}) == []
+```
+
+- [ ] **Step 2: Run the tests to confirm they fail**
+
+Run: `.venv/bin/pytest tests/test_lexical.py -q`
+Expected: collection error — `ModuleNotFoundError: No module named 'mcp_nvidia.lib.lexical'`.
+
+- [ ] **Step 3: Implement the module**
+
+Create `src/mcp_nvidia/lib/lexical.py`:
+
+```python
+"""BM25 lexical scoring over result titles and snippets.
+
+Pure functions with no I/O. IDF uses Lucene's non-negative form: every candidate was
+retrieved *for* the query, so core query terms appear in most of them, and the textbook
+Okapi IDF goes negative for exactly those terms (measured: `cuda` in 34 of 43 results).
+"""
+
+import math
+import re
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from nltk.stem import PorterStemmer
+
+from mcp_nvidia.lib.relevance import STOPWORDS
+
+# Title terms count this many times, preserving the old scorer's title-over-snippet weighting.
+TITLE_WEIGHT = 2
+# Weight of stems that come only from query expansion. Expansion variants are rare in
+# results, so IDF would otherwise weight them far above real terms (measured: trt 1.83 vs tensorrt 0.47).
+EXPANSION_TERM_WEIGHT = 0.5
+BM25_K1 = 1.2
+BM25_B = 0.75
+
+_TOKEN_SPLIT = re.compile(r"[^0-9a-z]+")
+_stem = PorterStemmer().stem
+
+
+def tokenize(text: str) -> list[str]:
+    """Lowercase, split on non-alphanumerics, drop stopwords and noise, and stem."""
+    tokens = []
+    for raw in _TOKEN_SPLIT.split(text.lower()):
+        if len(raw) >= 2 and any(char.isalpha() for char in raw) and raw not in STOPWORDS:
+            tokens.append(_stem(raw))
+    return tokens
+
+
+def query_term_weights(original_query: str, expanded_query: str) -> dict[str, float]:
+    """Weight per distinct query stem: 1.0 for the user's own terms, less for expansion-only ones."""
+    original_terms = set(tokenize(original_query))
+    return {
+        term: (1.0 if term in original_terms else EXPANSION_TERM_WEIGHT)
+        for term in dict.fromkeys([*tokenize(original_query), *tokenize(expanded_query)])
+    }
+
+
+def document_tokens(result: Mapping[str, Any]) -> list[str]:
+    """Tokens for one result: the title repeated TITLE_WEIGHT times, then the plain snippet."""
+    title = tokenize(str(result.get("title", "")))
+    snippet = str(result.get("snippet_plain") or result.get("snippet", "")).replace("**", "")
+    return title * TITLE_WEIGHT + tokenize(snippet)
+
+
+def bm25_scores(documents: Sequence[Sequence[str]], query_weights: Mapping[str, float]) -> list[float]:
+    """BM25 score per document, with IDF and average length computed over these documents."""
+    n = len(documents)
+    if n == 0:
+        return []
+    if not query_weights:
+        return [0.0] * n
+
+    average_length = sum(len(document) for document in documents) / n or 1.0
+    term_counts = [Counter(document) for document in documents]
+    idf = {}
+    for term in query_weights:
+        document_frequency = sum(1 for counts in term_counts if term in counts)
+        idf[term] = math.log(1 + (n - document_frequency + 0.5) / (document_frequency + 0.5))
+
+    scores = []
+    for document, counts in zip(documents, term_counts, strict=True):
+        length_norm = BM25_K1 * (1 - BM25_B + BM25_B * len(document) / average_length)
+        score = 0.0
+        for term, weight in query_weights.items():
+            frequency = counts.get(term, 0)
+            if frequency:
+                score += weight * idf[term] * frequency * (BM25_K1 + 1) / (frequency + length_norm)
+        scores.append(score)
+    return scores
+```
+
+- [ ] **Step 4: Run the tests to confirm they pass**
+
+Run: `.venv/bin/pytest tests/test_lexical.py -q`
+Expected: `10 passed`.
+
+- [ ] **Step 5: Lint and run the whole suite**
+
+Run: `uv tool run ruff@0.8.4 check src/mcp_nvidia/lib/lexical.py tests/test_lexical.py && .venv/bin/pytest tests/ -q`
+Expected: no ruff findings; `72 passed, 11 skipped` (the 48 baseline tests + 14 from Task 1 + 10 here).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/mcp_nvidia/lib/lexical.py tests/test_lexical.py
+git commit -F - <<'EOF'
+feat: Add BM25 lexical scoring
+
+BM25 over title and snippet with Porter stemming, titles weighted twice,
+Lucene's non-negative IDF (Okapi IDF goes negative for core query terms
+on query-biased candidate sets) and expansion-only terms at half weight.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013FriD63a2waebg8Qmtscj6
+EOF
+```
+
+---
+
+### Task 3: Semantic ranking module
+
+The load-once model, off-loop encoding and explicit failure reasons. Tested entirely with fakes: this task does **not** need fastembed.
 
 **Files:**
 
@@ -310,12 +536,12 @@ The load-once model, off-loop encoding and explicit failure reasons. Tested enti
 - Produces (all in `mcp_nvidia.lib.embeddings`):
   - Constants: `DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"`, `DEFAULT_THREADS = 4`, `ENCODE_TIMEOUT_SECONDS = 10.0`
   - Reasons: `NOT_INSTALLED = "not_installed"`, `MODEL_LOAD_FAILED = "model_load_failed"`, `ENCODE_FAILED = "encode_failed"`
-  - `class EmbeddingsNotInstalled(Exception)`
+  - `class EmbeddingsNotInstalledError(Exception)`
   - `@dataclass(frozen=True) class SemanticRanking: order: list[int] | None; similarities: list[float] | None; unavailable: str | None`
   - `build_document_text(result: Mapping[str, Any]) -> str`
   - `async semantic_rank(query: str, results: Sequence[Mapping[str, Any]]) -> SemanticRanking`
-  - Test seams: `_get_model() -> tuple[Any | None, str | None]`, `_reset_for_tests(loader: Callable[[], Any] | None = None) -> None`
-- Produces (in `tests.search_fakes`): `FakeEmbeddingModel` — a class whose `query_embed(texts)` / `embed(texts)` yield numpy vectors over a fixed vocabulary.
+  - Test seams: `_get_model() -> tuple[Any | None, str | None]` and `_reset_for_tests(loader: Callable[[], Any] | None = None) -> None`
+- Produces (in `tests.search_fakes`): `FakeEmbeddingModel`, a class whose `query_embed(texts)` and `embed(texts)` yield numpy vectors over a fixed vocabulary.
 
 - [ ] **Step 1: Write the fake model**
 
@@ -437,12 +663,14 @@ async def test_unavailable_model_returns_the_failure_reason():
 
     ranking = await embeddings.semantic_rank("cuda", [{"title": "CUDA", "snippet": "cuda"}])
 
-    assert ranking == embeddings.SemanticRanking(order=None, similarities=None, unavailable=embeddings.MODEL_LOAD_FAILED)
+    assert ranking == embeddings.SemanticRanking(
+        order=None, similarities=None, unavailable=embeddings.MODEL_LOAD_FAILED
+    )
 
 
 async def test_encode_exception_is_reported_as_encode_failed():
     class BrokenModel(FakeEmbeddingModel):
-        def embed(self, texts):
+        def embed(self, _texts):
             raise RuntimeError("onnxruntime error")
 
     embeddings._reset_for_tests(loader=BrokenModel)
@@ -450,7 +678,8 @@ async def test_encode_exception_is_reported_as_encode_failed():
     ranking = await embeddings.semantic_rank("cuda", [{"title": "CUDA", "snippet": "cuda"}])
 
     assert ranking.unavailable == embeddings.ENCODE_FAILED
-    assert ranking.order is None and ranking.similarities is None
+    assert ranking.order is None
+    assert ranking.similarities is None
 
 
 async def test_encode_timeout_is_reported_as_encode_failed(monkeypatch):
@@ -518,7 +747,7 @@ MODEL_LOAD_FAILED = "model_load_failed"
 ENCODE_FAILED = "encode_failed"
 
 
-class EmbeddingsNotInstalled(Exception):
+class EmbeddingsNotInstalledError(Exception):
     """The optional [embeddings] extra (fastembed) is not installed."""
 
 
@@ -544,7 +773,7 @@ def _default_loader() -> Any:
     try:
         from fastembed import TextEmbedding
     except ImportError as exc:
-        raise EmbeddingsNotInstalled("install mcp-nvidia[embeddings] to enable semantic ranking") from exc
+        raise EmbeddingsNotInstalledError("install mcp-nvidia[embeddings] to enable semantic ranking") from exc
 
     model_name = os.getenv("MCP_NVIDIA_EMBEDDING_MODEL", DEFAULT_MODEL)
     threads = int(os.getenv("MCP_NVIDIA_EMBEDDING_THREADS", str(DEFAULT_THREADS)))
@@ -569,7 +798,7 @@ def _get_model() -> tuple[Any | None, str | None]:
         loader = _state.loader or _default_loader
         try:
             _state.model = loader()
-        except EmbeddingsNotInstalled:
+        except EmbeddingsNotInstalledError:
             _state.failure = NOT_INSTALLED
             logger.info("Semantic ranking disabled: fastembed is not installed (pip install 'mcp-nvidia[embeddings]')")
         except Exception as exc:
@@ -637,8 +866,8 @@ Expected: `fastembed imported at import time: False`.
 
 - [ ] **Step 7: Lint and run the whole suite**
 
-Run: `.venv/bin/ruff check src/mcp_nvidia/lib/embeddings.py tests/ && .venv/bin/pytest tests/ -q`
-Expected: no ruff findings; `71 passed, 11 skipped` (48 baseline + 14 from Task 1 + 9 here).
+Run: `uv tool run ruff@0.8.4 check src/mcp_nvidia/lib/embeddings.py tests/ && .venv/bin/pytest tests/ -q`
+Expected: no ruff findings; `81 passed, 11 skipped`.
 
 - [ ] **Step 8: Commit**
 
@@ -659,23 +888,29 @@ EOF
 
 ---
 
-### Task 3: Hybrid ranking in the search pipeline
+### Task 4: Hybrid ranking in the search pipeline
 
-Moves the existing dedupe ahead of scoring, replaces the fixed 70/30 blend with the evidence floor plus fusion, reports installed-but-failing semantics in `warnings`, and updates the two schema descriptions whose meaning changed.
+This task:
+
+- keeps the original query alongside the expanded one;
+- moves the existing dedupe ahead of scoring;
+- replaces the keyword heuristic, TF-IDF and their 70/30 blend with BM25, the evidence floor and fusion;
+- reports installed-but-failing semantics in `warnings`;
+- updates the two schema descriptions whose meaning changed.
 
 **Files:**
 
-- Modify: `src/mcp_nvidia/lib/search.py` (imports ~line 19–25; new function after `_search_domain_with_semaphore` ~line 209; scoring block ~lines 327–369; dedupe call ~line 388–389)
+- Modify: `src/mcp_nvidia/lib/search.py`: imports (~lines 19–25); the query-expansion block (~lines 276–280); a new function after `_search_domain_with_semaphore` (~line 209); the scoring block (~lines 327–369); the dedupe call (~lines 388–389)
 - Modify: `src/mcp_nvidia/server.py` (descriptions at ~line 100 and ~line 220)
 - Modify: `tests/search_fakes.py`
 - Test: `tests/test_search_pipeline.py`
 
 **Interfaces:**
 
-- Consumes: everything Task 1 and Task 2 produce; `deduplicate_results` (existing); `calculate_search_relevance`, `calculate_tfidf_scores`, `get_domain_boost`, `extract_keywords` (existing, in `mcp_nvidia.lib.relevance`).
+- Consumes: everything Tasks 1–3 produce; `deduplicate_results`, `expand_query_with_product_variants` and `get_domain_boost` (existing).
 - Produces:
   - `mcp_nvidia.lib.search.SEMANTIC_UNAVAILABLE_WARNING = "SEMANTIC_RANKING_UNAVAILABLE"`
-  - `async mcp_nvidia.lib.search._rank_candidates(candidates: list[dict[str, Any]], query: str, warnings: list[dict[str, Any]], rrf_k: int = RRF_K, tau: float = EVIDENCE_FLOOR_TAU) -> list[dict[str, Any]]` — survivors best-first with `relevance_score` set; mutates the candidate dicts. Tasks 5 and 6 call it directly.
+  - `async mcp_nvidia.lib.search._rank_candidates(candidates: list[dict[str, Any]], query: str, warnings: list[dict[str, Any]], *, original_query: str | None = None, rrf_k: int = RRF_K, tau: float = EVIDENCE_FLOOR_TAU) -> list[dict[str, Any]]`. `query` is the expanded query, and `original_query` defaults to it. The function returns the surviving candidates best-first with `relevance_score` set, and mutates the candidate dicts. Tasks 6 and 7 call it directly.
   - `tests.search_fakes.install_fake_search(monkeypatch, pages=FAKE_PAGES) -> None`, `tests.search_fakes.FAKE_PAGES`, `tests.search_fakes.FAILING_DOMAIN = "forums.nvidia.com"`
 
 - [ ] **Step 1: Add the network fakes**
@@ -724,7 +959,7 @@ FAILING_DOMAIN = "forums.nvidia.com"
 
 def install_fake_search(monkeypatch, pages: dict[str, list[dict[str, str]]] = FAKE_PAGES) -> None:
     """Replace ddgs and page fetching inside mcp_nvidia.lib.search with offline fakes."""
-    import mcp_nvidia.lib.search as search
+    from mcp_nvidia.lib import search
 
     async def fake_fetch_ddgs_results(search_query: str, max_results: int) -> list[dict[str, str]]:
         domain = search_query.split()[0].removeprefix("site:")
@@ -749,8 +984,7 @@ Create `tests/test_search_pipeline.py`:
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-import mcp_nvidia.lib.search as search
-from mcp_nvidia.lib import embeddings
+from mcp_nvidia.lib import embeddings, search
 from mcp_nvidia.lib.fusion import relevance_from_position
 from mcp_nvidia.server import app
 from tests.search_fakes import FAILING_DOMAIN, FakeEmbeddingModel, install_fake_search
@@ -758,6 +992,7 @@ from tests.search_fakes import FAILING_DOMAIN, FakeEmbeddingModel, install_fake_
 DOMAINS = ["https://developer.nvidia.com/", "https://catalog.ngc.nvidia.com/", "https://ngc.nvidia.com/"]
 OPENACC_URL = "https://catalog.ngc.nvidia.com/orgs/hpc/containers/openacc"
 JETSON_URL = "https://developer.nvidia.com/embedded/community"
+MEMORY_GUIDE_URL = "https://developer.nvidia.com/blog/cuda-memory"
 
 
 @pytest.fixture(autouse=True)
@@ -769,23 +1004,25 @@ def _offline(monkeypatch):
 
 
 async def _search(query="cuda memory", domains=DOMAINS):
-    return await search.search_all_domains(query=query, domains=domains, max_results_per_domain=3, min_relevance_score=0)
+    return await search.search_all_domains(
+        query=query, domains=domains, max_results_per_domain=3, min_relevance_score=0
+    )
 
 
 async def test_duplicates_are_removed_before_scoring(monkeypatch):
-    scored = {}
-    real_tfidf = search.calculate_tfidf_scores
+    scored_urls = []
+    real_document_tokens = search.document_tokens
 
-    def spy(results, query):
-        scored["urls"] = [result["url"] for result in results]
-        return real_tfidf(results, query)
+    def spy(result):
+        scored_urls.append(result["url"])
+        return real_document_tokens(result)
 
-    monkeypatch.setattr(search, "calculate_tfidf_scores", spy)
+    monkeypatch.setattr(search, "document_tokens", spy)
 
     await _search()
 
-    assert scored["urls"].count(OPENACC_URL) == 1
-    assert len(scored["urls"]) == len(set(scored["urls"]))
+    assert scored_urls.count(OPENACC_URL) == 1
+    assert len(scored_urls) == len(set(scored_urls))
 
 
 async def test_relevance_scores_are_derived_from_fused_position():
@@ -796,10 +1033,36 @@ async def test_relevance_scores_are_derived_from_fused_position():
     assert [r["relevance_score"] for r in results] == [relevance_from_position(p, n) for p in range(n)]
 
 
-async def test_evidence_floor_drops_results_with_no_keyword_or_semantic_match():
+async def test_evidence_floor_drops_results_with_no_lexical_or_semantic_match():
     results, *_ = await _search()
 
     assert JETSON_URL not in [r["url"] for r in results]
+
+
+async def test_bm25_alone_ranks_the_stronger_match_first():
+    def not_installed_loader():
+        raise embeddings.EmbeddingsNotInstalledError("no fastembed")
+
+    embeddings._reset_for_tests(loader=not_installed_loader)
+
+    results, *_ = await _search()
+
+    assert results[0]["url"] == MEMORY_GUIDE_URL
+
+
+async def test_semantic_ranking_embeds_the_original_query(monkeypatch):
+    seen_queries = []
+    real_semantic_rank = search.semantic_rank
+
+    async def spy(query, results):
+        seen_queries.append(query)
+        return await real_semantic_rank(query, results)
+
+    monkeypatch.setattr(search, "semantic_rank", spy)
+
+    await _search(query="TensorRT inference")
+
+    assert seen_queries == ["TensorRT inference"]
 
 
 async def test_error_results_score_zero_and_are_not_ranked():
@@ -809,7 +1072,9 @@ async def test_error_results_score_zero_and_are_not_ranked():
     errored = [r for r in results if r.get("is_error")]
     assert errored, "the failing domain should produce an error result"
     assert all(r["relevance_score"] == 0 for r in errored)
-    assert [r["relevance_score"] for r in ranked] == [relevance_from_position(p, len(ranked)) for p in range(len(ranked))]
+    assert [r["relevance_score"] for r in ranked] == [
+        relevance_from_position(p, len(ranked)) for p in range(len(ranked))
+    ]
 
 
 async def test_installed_but_failing_semantics_warns_and_still_returns_results():
@@ -824,22 +1089,10 @@ async def test_installed_but_failing_semantics_warns_and_still_returns_results()
     assert matching == [
         {
             "code": "SEMANTIC_RANKING_UNAVAILABLE",
-            "message": "Semantic ranking unavailable; results ranked by keyword and TF-IDF only",
+            "message": "Semantic ranking unavailable; results ranked by BM25 only",
             "reason": "model_load_failed",
         }
     ]
-    assert results
-
-
-async def test_not_installed_semantics_is_a_supported_mode_without_a_warning():
-    def not_installed_loader():
-        raise embeddings.EmbeddingsNotInstalled("no fastembed")
-
-    embeddings._reset_for_tests(loader=not_installed_loader)
-
-    results, _errors, warnings, _timing = await _search()
-
-    assert all(w["code"] != search.SEMANTIC_UNAVAILABLE_WARNING for w in warnings)
     assert results
 
 
@@ -859,13 +1112,13 @@ async def test_search_tool_reports_semantic_failure_over_the_protocol():
     assert result.isError is False
     payload = result.structuredContent
     assert "SEMANTIC_RANKING_UNAVAILABLE" in [w["code"] for w in payload["warnings"]]
-    assert payload["results"], "keyword + TF-IDF ranking should still return results"
+    assert payload["results"], "BM25 ranking should still return results"
 ```
 
 - [ ] **Step 3: Run the tests to confirm they fail**
 
 Run: `.venv/bin/pytest tests/test_search_pipeline.py -q`
-Expected: failures — `AttributeError: module 'mcp_nvidia.lib.search' has no attribute 'SEMANTIC_UNAVAILABLE_WARNING'`, and the scoring/dedupe assertions fail against the current 70/30 blend.
+Expected: failures — `AttributeError: module 'mcp_nvidia.lib.search' has no attribute 'document_tokens'` (and `SEMANTIC_UNAVAILABLE_WARNING`), and the scoring assertions fail against the current 70/30 blend.
 
 - [ ] **Step 4: Update the imports in `search.py`**
 
@@ -892,18 +1145,13 @@ from mcp_nvidia.lib.fusion import (
     reciprocal_rank_fusion,
     relevance_from_position,
 )
-from mcp_nvidia.lib.relevance import (
-    calculate_search_relevance,
-    calculate_tfidf_scores,
-    expand_query_with_product_variants,
-    extract_keywords,
-    get_domain_boost,
-)
+from mcp_nvidia.lib.lexical import bm25_scores, document_tokens, query_term_weights
+from mcp_nvidia.lib.relevance import expand_query_with_product_variants, get_domain_boost
 ```
 
 - [ ] **Step 5: Add `_rank_candidates`**
 
-Insert immediately after the `_search_domain_with_semaphore` function (before `async def search_all_domains`):
+Insert immediately after the `_search_domain_with_semaphore` function, before `async def search_all_domains`:
 
 ```python
 SEMANTIC_UNAVAILABLE_WARNING = "SEMANTIC_RANKING_UNAVAILABLE"
@@ -913,47 +1161,47 @@ async def _rank_candidates(
     candidates: list[dict[str, Any]],
     query: str,
     warnings: list[dict[str, Any]],
+    *,
+    original_query: str | None = None,
     rrf_k: int = RRF_K,
     tau: float = EVIDENCE_FLOOR_TAU,
 ) -> list[dict[str, Any]]:
     """Score, gate and fuse candidates; return survivors best-first with relevance_score set.
 
-    Keyword and TF-IDF scores always rank. Semantic similarity ranks too when the
-    [embeddings] extra is installed and working; when it is installed but fails, a
-    warning is appended so degraded ranking is visible in the response.
+    `query` is the expanded query and `original_query` the user's own (defaulting to
+    `query`). BM25 always ranks. Semantic similarity to the original query ranks too
+    when the [embeddings] extra is installed and working; when it is installed but
+    fails, a warning is appended so degraded ranking is visible in the response.
     """
     if not candidates:
         return []
 
-    keyword_scores = [
-        calculate_search_relevance(result, query, get_domain_boost(result.get("domain", ""), query))
-        for result in candidates
-    ]
-    tfidf_scores = calculate_tfidf_scores(candidates, query)
-    semantic = await semantic_rank(query, candidates)
+    user_query = original_query if original_query is not None else query
+    query_weights = query_term_weights(user_query, query)
+    bm25 = bm25_scores([document_tokens(result) for result in candidates], query_weights)
+    domain_boosts = [get_domain_boost(result.get("domain", ""), query) for result in candidates]
+    lexical_scores = [score * boost for score, boost in zip(bm25, domain_boosts, strict=True)]
 
+    semantic = await semantic_rank(user_query, candidates)
     if semantic.unavailable in (MODEL_LOAD_FAILED, ENCODE_FAILED):
         warnings.append(
             {
                 "code": SEMANTIC_UNAVAILABLE_WARNING,
-                "message": "Semantic ranking unavailable; results ranked by keyword and TF-IDF only",
+                "message": "Semantic ranking unavailable; results ranked by BM25 only",
                 "reason": semantic.unavailable,
             }
         )
 
     survivors = apply_evidence_floor(
-        keyword_scores,
+        lexical_scores,
         semantic.similarities,
         tau=tau,
-        query_has_keywords=bool(extract_keywords(query)),
+        query_has_terms=bool(query_weights),
     )
     if not survivors:
         return []
 
-    rankings = [
-        rank_by_score([keyword_scores[i] for i in survivors]),
-        rank_by_score([tfidf_scores[i] for i in survivors]),
-    ]
+    rankings = [rank_by_score([lexical_scores[i] for i in survivors])]
     if semantic.similarities is not None:
         rankings.append(rank_by_score([semantic.similarities[i] for i in survivors]))
 
@@ -964,8 +1212,9 @@ async def _rank_candidates(
         result["relevance_score"] = relevance_from_position(position, len(survivors))
         if logger.isEnabledFor(logging.DEBUG):
             result["_debug_scores"] = {
-                "keyword_score": keyword_scores[index],
-                "tfidf_score": round(tfidf_scores[index], 4),
+                "bm25": round(bm25[index], 4),
+                "domain_boost": domain_boosts[index],
+                "lexical_score": round(lexical_scores[index], 4),
                 "semantic_similarity": (
                     None if semantic.similarities is None else round(semantic.similarities[index], 4)
                 ),
@@ -976,9 +1225,29 @@ async def _rank_candidates(
     return ranked
 ```
 
-- [ ] **Step 6: Replace the 70/30 scoring block**
+- [ ] **Step 6: Keep the original query**
 
-In `search_all_domains`, replace this entire block (from the TF-IDF comment through the end of the per-result `_debug_scores` block, immediately before `# Add content type detection to each result`):
+In `search_all_domains`, replace:
+
+```python
+    # Expand query with product variants for better matching
+    expanded_query = expand_query_with_product_variants(query)
+```
+
+with:
+
+```python
+    # Keep the user's own query: BM25 weighs expansion-only terms lower, and semantic
+    # ranking embeds the original query without expansion variants.
+    original_query = query
+
+    # Expand query with product variants for better matching
+    expanded_query = expand_query_with_product_variants(query)
+```
+
+- [ ] **Step 7: Replace the 70/30 scoring block**
+
+In `search_all_domains`, replace this entire block, from the TF-IDF comment through the end of the per-result `_debug_scores` block, immediately before `# Add content type detection to each result`:
 
 ```python
     # Calculate TF-IDF scores for all results
@@ -1040,19 +1309,19 @@ with:
         result["relevance_score"] = 0
     candidates = [result for result in all_results if not result.get("is_error", False)]
 
-    all_results = await _rank_candidates(candidates, query, warnings) + error_results
+    all_results = await _rank_candidates(candidates, query, warnings, original_query=original_query) + error_results
 ```
 
-- [ ] **Step 7: Remove the old post-filter dedupe**
+- [ ] **Step 8: Remove the old post-filter dedupe**
 
-Delete these two lines (and the blank line after them) further down in `search_all_domains`:
+Further down in `search_all_domains`, delete these two lines and the blank line after them:
 
 ```python
     # Deduplicate results (v0.3.0 feature)
     filtered_results = deduplicate_results(filtered_results)
 ```
 
-- [ ] **Step 8: Update the two schema descriptions in `server.py`**
+- [ ] **Step 9: Update the two schema descriptions in `server.py`**
 
 Replace:
 
@@ -1065,7 +1334,8 @@ with:
 ```python
                         "description": (
                             "Minimum relevance score (0-100). Scores come from each result's position in the fused "
-                            "ranking, after results with no keyword or semantic match are removed (default: 17)"
+                            "ranking, after results matching no query term and with low semantic similarity are "
+                            "removed (default: 17)"
                         ),
 ```
 
@@ -1080,34 +1350,37 @@ with:
 ```python
                                     "description": (
                                         "Relevance score from 0-100, derived from the result's position after fusing "
-                                        "keyword, TF-IDF and (when installed) semantic rankings; 100 is the top result"
+                                        "BM25 and (when installed) semantic rankings; 100 is the top result"
                                     ),
 ```
 
-- [ ] **Step 9: Run the pipeline tests**
+- [ ] **Step 10: Run the pipeline tests**
 
 Run: `.venv/bin/pytest tests/test_search_pipeline.py -q`
-Expected: `7 passed`, **0 errors**.
+Expected: `8 passed`, **0 errors**.
 
-If `test_evidence_floor_drops_results_with_no_keyword_or_semantic_match` fails, print the expanded query with `.venv/bin/python -c "from mcp_nvidia.lib.relevance import expand_query_with_product_variants as e; print(e('cuda memory'))"`. Query expansion may have added a term that matches the Jetson page; if so, change the Jetson fake's title and body to words outside both the expanded query and `VOCABULARY`, not the assertion.
+If `test_evidence_floor_drops_results_with_no_lexical_or_semantic_match` fails, print the expanded query: `.venv/bin/python -c "from mcp_nvidia.lib.relevance import expand_query_with_product_variants as e; print(e('cuda memory'))"`. Expansion may have added a term that matches the Jetson page. If so, change the Jetson fake's title and body to words outside both the expanded query and `VOCABULARY`; don't change the assertion.
 
-- [ ] **Step 10: Run the whole suite and lint**
+- [ ] **Step 11: Run the whole suite and lint**
 
-Run: `.venv/bin/ruff check src/ tests/ && .venv/bin/pytest tests/ -q`
-Expected: no ruff findings; `78 passed, 11 skipped`. `tests/test_sdk_generation.py` regenerates SDKs from the tool schemas; if it fails on the description change, read the assertion — it should not pin description text, and a failure there means an assertion needs updating to the new wording, not reverting the wording.
+Run: `uv tool run ruff@0.8.4 check src/ tests/ && .venv/bin/pytest tests/ -q`
+Expected: no ruff findings (in particular, no unused imports left in `search.py`); `89 passed, 11 skipped`.
 
-- [ ] **Step 11: Commit**
+`tests/test_sdk_generation.py` regenerates the SDKs from the tool schemas. If it fails on the description change, read the assertion. It should not pin description text, so a failure means the assertion needs updating to the new wording; don't revert the wording.
+
+- [ ] **Step 12: Commit**
 
 ```bash
 git add src/mcp_nvidia/lib/search.py src/mcp_nvidia/server.py tests/search_fakes.py tests/test_search_pipeline.py
 git commit -F - <<'EOF'
-feat: Rank search results with an evidence floor and rank fusion
+feat: Rank search results with BM25, an evidence floor and rank fusion
 
-Replaces the fixed 70% keyword / 30% TF-IDF blend with reciprocal rank
-fusion over keyword, TF-IDF and (when installed) semantic rankings,
-gated by an evidence floor. relevance_score is now derived from fused
-position. The existing dedupe moves ahead of scoring so duplicates are
-scored once. An installed-but-failing embedding model adds a
+Replaces the keyword heuristic, TF-IDF and their fixed 70/30 blend with a
+single BM25 score fused with semantic similarity (when installed) by
+reciprocal rank fusion, gated by an evidence floor. relevance_score is
+now derived from fused position. The existing dedupe moves ahead of
+scoring. Semantic ranking embeds the user's original query. An
+installed-but-failing embedding model adds a
 SEMANTIC_RANKING_UNAVAILABLE warning.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
@@ -1117,7 +1390,7 @@ EOF
 
 ---
 
-### Task 4: Optional extra, Docker image and CI
+### Task 5: Optional extra, Docker image and CI
 
 Makes the feature installable, bakes the model into the production image, and adds a CI job that exercises the real model.
 
@@ -1130,8 +1403,8 @@ Makes the feature installable, bakes the model into the production image, and ad
 
 **Interfaces:**
 
-- Consumes: `embeddings.semantic_rank`, `embeddings._reset_for_tests` (Task 2).
-- Produces: the `embeddings` extra; a Docker image with weights at `/opt/models`; CI job `embeddings`.
+- Consumes: `embeddings.semantic_rank` and `embeddings._reset_for_tests` (Task 3).
+- Produces: the `embeddings` extra; a Docker image with weights at `/opt/models`; the CI job `embeddings`.
 
 - [ ] **Step 1: Write the real-model smoke test**
 
@@ -1170,11 +1443,11 @@ async def test_real_model_ranks_the_relevant_result_first():
 - [ ] **Step 2: Confirm it skips without the extra**
 
 Run: `.venv/bin/pytest tests/test_embeddings_model.py -q -rs`
-Expected: `1 skipped` with reason `could not import 'fastembed'`.
+Expected: `1 skipped`, with reason `could not import 'fastembed'`.
 
 - [ ] **Step 3: Add the extra**
 
-In `pyproject.toml`, under `[project.optional-dependencies]`, after the `ui` entry, add:
+In `pyproject.toml`, under `[project.optional-dependencies]`, add after the `ui` entry:
 
 ```toml
 embeddings = [
@@ -1207,7 +1480,7 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-smal
 
 - [ ] **Step 6: Verify the image (if Docker is available locally)**
 
-Run: `docker version --format '{{.Server.Version}}'`. If that fails, Docker isn't available: note it and continue — Task 7 verifies the deployed image instead.
+Run: `docker version --format '{{.Server.Version}}'`. If that fails, Docker isn't available: note it and continue, since Task 8 verifies the image instead.
 
 Otherwise run:
 
@@ -1258,12 +1531,12 @@ Append this job to `.github/workflows/test.yml`, as a sibling of the existing `t
 - [ ] **Step 8: Validate the workflow file**
 
 Run: `.venv/bin/python -c "import yaml; wf = yaml.safe_load(open('.github/workflows/test.yml')); print(list(wf['jobs']))"`
-Expected: `['test', 'embeddings']`. (If `yaml` is missing: `uv pip install -p .venv/bin/python pyyaml` first.)
+Expected: `['test', 'embeddings']`. If `yaml` is missing, run `uv pip install -p .venv/bin/python pyyaml` first.
 
 - [ ] **Step 9: Run the whole suite with the extra installed**
 
 Run: `.venv/bin/pytest tests/ -q`
-Expected: `79 passed, 11 skipped` — the real-model test now runs.
+Expected: `90 passed, 11 skipped`. The real-model test now runs.
 
 - [ ] **Step 10: Commit**
 
@@ -1283,21 +1556,22 @@ EOF
 
 ---
 
-### Task 5: Ranking comparison script and τ
+### Task 6: Ranking comparison script, k and τ
 
-A live tool, not a test: compares the removed 70/30 baseline with hybrid ranking, sweeps `k`, measures the similarity distribution that sets τ, and records candidates for Task 6.
+This is a live tool, not a test. It compares the removed 70/30 baseline with hybrid ranking, prints each query term's IDF, sweeps `k`, measures the similarity distribution that sets τ, and records candidates for Task 7.
 
 **Files:**
 
 - Create: `scripts/eval_ranking.py`
 - Modify: `pyproject.toml` (ruff per-file ignore, only if needed)
-- Modify: `src/mcp_nvidia/lib/fusion.py` (`EVIDENCE_FLOOR_TAU` value)
+- Modify: `src/mcp_nvidia/lib/fusion.py` (the `EVIDENCE_FLOOR_TAU` value, and `RRF_K` if the measurement says so)
+- Modify: `tests/test_fusion.py` (only if `RRF_K` changes)
 - Create: `tests/fixtures/ranking/*.json` (recorded, unlabeled)
 
 **Interfaces:**
 
-- Consumes: `search_nvidia_domain`, `_rank_candidates` (Task 3); `semantic_rank` (Task 2); `deduplicate_results`, `calculate_search_relevance`, `calculate_tfidf_scores`, `get_domain_boost`, `expand_query_with_product_variants`, `extract_keywords`.
-- Produces: `scripts/eval_ranking.py` with `--queries`, `--rrf-k`, `--tau`, `--model`, `--no-embeddings`, `--per-domain`, `--record DIR`; recorded fixture files `{"query", "expanded_query", "candidates", "assertions": []}`.
+- Consumes: `search_nvidia_domain` and `_rank_candidates` (Task 4); `semantic_rank` (Task 3); `tokenize`, `document_tokens`, `query_term_weights` and `bm25_scores`, plus the module constants in `mcp_nvidia.lib.lexical` (Task 2); `deduplicate_results`, `calculate_search_relevance`, `calculate_tfidf_scores`, `get_domain_boost` and `expand_query_with_product_variants` (existing; the last three also form the baseline).
+- Produces: `scripts/eval_ranking.py` with the options `--queries`, `--rrf-k`, `--tau`, `--title-weight`, `--expansion-weight`, `--model`, `--no-embeddings`, `--per-domain` and `--record DIR`; recorded fixture files of the form `{"query", "expanded_query", "candidates", "assertions": []}`.
 
 - [ ] **Step 1: Write the script**
 
@@ -1305,12 +1579,14 @@ Create `scripts/eval_ranking.py`:
 
 ```python
 #!/usr/bin/env python3
-"""Compare the old 70/30 blend with hybrid ranking on live queries.
+"""Compare the removed 70/30 keyword/TF-IDF blend with hybrid ranking on live queries.
 
-Not a test: it hits DuckDuckGo and NVIDIA sites. Use it to choose k and tau and to
-record candidates that tests/test_ranking_fixtures.py turns into regression fixtures.
+Not a test: it hits DuckDuckGo and NVIDIA sites. Use it to choose k and tau, to inspect
+BM25 term weights on real results, and to record candidates that
+tests/test_ranking_fixtures.py turns into regression fixtures.
 
-    .venv/bin/python scripts/eval_ranking.py --rrf-k 5 10 20 30
+    .venv/bin/python scripts/eval_ranking.py
+    .venv/bin/python scripts/eval_ranking.py --no-embeddings --rrf-k 30
     .venv/bin/python scripts/eval_ranking.py --record tests/fixtures/ranking
 """
 
@@ -1318,9 +1594,9 @@ import argparse
 import asyncio
 import copy
 import json
+import math
 import os
 import re
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -1344,21 +1620,30 @@ RECORDED_FIELDS = ("title", "url", "snippet", "snippet_plain", "domain", "publis
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--queries", nargs="+", default=DEFAULT_QUERIES)
-    parser.add_argument("--rrf-k", nargs="+", type=int, default=[5, 10, 20, 30])
+    parser.add_argument("--rrf-k", nargs="+", type=int, default=[10, 20, 30, 40, 60])
     parser.add_argument("--tau", type=float, default=None, help="evidence-floor threshold (default: fusion.py)")
+    parser.add_argument("--title-weight", type=int, default=None, help="override lexical.TITLE_WEIGHT")
+    parser.add_argument("--expansion-weight", type=float, default=None, help="override lexical.EXPANSION_TERM_WEIGHT")
     parser.add_argument("--model", default=None, help="override MCP_NVIDIA_EMBEDDING_MODEL")
-    parser.add_argument("--no-embeddings", action="store_true", help="rank on keyword + TF-IDF only")
+    parser.add_argument("--no-embeddings", action="store_true", help="rank on BM25 only")
     parser.add_argument("--per-domain", type=int, default=3)
     parser.add_argument("--record", type=Path, default=None, help="write candidates to DIR/<query>.json")
     return parser.parse_args()
 
 
-def configure_embeddings(args: argparse.Namespace) -> None:
+def configure(args: argparse.Namespace) -> None:
     # Must run before anything loads the model.
     if args.no_embeddings:
         sys.modules["fastembed"] = None  # makes the default loader report not_installed
     if args.model:
         os.environ["MCP_NVIDIA_EMBEDDING_MODEL"] = args.model
+
+    from mcp_nvidia.lib import lexical
+
+    if args.title_weight is not None:
+        lexical.TITLE_WEIGHT = args.title_weight
+    if args.expansion_weight is not None:
+        lexical.EXPANSION_TERM_WEIGHT = args.expansion_weight
 
 
 async def gather_candidates(query: str, per_domain: int):
@@ -1397,7 +1682,7 @@ def percentile(values: list[float], fraction: float) -> float:
 async def evaluate(query: str, args: argparse.Namespace) -> None:
     from mcp_nvidia.lib.embeddings import semantic_rank
     from mcp_nvidia.lib.fusion import EVIDENCE_FLOOR_TAU
-    from mcp_nvidia.lib.relevance import calculate_search_relevance, extract_keywords, get_domain_boost
+    from mcp_nvidia.lib.lexical import bm25_scores, document_tokens, query_term_weights
     from mcp_nvidia.lib.search import _rank_candidates
 
     tau = EVIDENCE_FLOOR_TAU if args.tau is None else args.tau
@@ -1407,8 +1692,18 @@ async def evaluate(query: str, args: argparse.Namespace) -> None:
     if not candidates:
         return
 
+    weights = query_term_weights(query, expanded)
+    tokens = [document_tokens(c) for c in candidates]
+    n = len(tokens)
+    print("BM25 query terms (df / Lucene idf / weight):")
+    for term, weight in weights.items():
+        df = sum(1 for document in tokens if term in document)
+        idf = math.log(1 + (n - df + 0.5) / (df + 0.5))
+        print(f"  {term:16s} {df:>3}/{n:<3}  idf={idf:.3f}  weight={weight}")
+    bm25 = bm25_scores(tokens, weights)
+
     started = time.perf_counter()
-    semantic = await semantic_rank(expanded, candidates)
+    semantic = await semantic_rank(query, candidates)
     encode_ms = (time.perf_counter() - started) * 1000
     print(f"semantic: {semantic.unavailable or 'available'} ({encode_ms:.0f} ms incl. any first load)")
 
@@ -1417,12 +1712,14 @@ async def evaluate(query: str, args: argparse.Namespace) -> None:
 
     hybrid_rank_by_k = {}
     for k in args.rrf_k:
-        ranked = await _rank_candidates(copy.deepcopy(candidates), expanded, warnings=[], rrf_k=k, tau=tau)
+        ranked = await _rank_candidates(
+            copy.deepcopy(candidates), expanded, warnings=[], original_query=query, rrf_k=k, tau=tau
+        )
         hybrid_rank_by_k[k] = {r["url"]: rank for rank, r in enumerate(ranked, 1)}
     kept = len(hybrid_rank_by_k[args.rrf_k[0]])
     print(f"evidence floor (tau={tau}): kept {kept}, removed {len(candidates) - kept}")
 
-    main_k = 10 if 10 in args.rrf_k else args.rrf_k[0]
+    main_k = 30 if 30 in args.rrf_k else args.rrf_k[0]
     header = "".join(f"  k={k:<3}" for k in args.rrf_k)
     print(f"\n  {'base':>4}{header}  {'move':>5}  title / url")
     for url in sorted(urls, key=lambda u: hybrid_rank_by_k[main_k].get(u, 10_000)):
@@ -1434,19 +1731,15 @@ async def evaluate(query: str, args: argparse.Namespace) -> None:
         print(f"  {base:>4}{cells}  {move:>5}  {title[:60]}  <{url[:70]}>")
 
     if semantic.similarities is not None:
-        sims = semantic.similarities
+        similarities = semantic.similarities
         print(
             "\nsimilarity p0/p25/p50/p75/p100: "
-            + " / ".join(f"{percentile(sims, f):.3f}" for f in (0.0, 0.25, 0.5, 0.75, 1.0))
+            + " / ".join(f"{percentile(similarities, f):.3f}" for f in (0.0, 0.25, 0.5, 0.75, 1.0))
         )
-        if extract_keywords(expanded):
-            no_keyword = [
-                (sims[i], c["title"])
-                for i, c in enumerate(candidates)
-                if calculate_search_relevance(c, expanded, get_domain_boost(c.get("domain", ""), expanded)) == 0
-            ]
-            print(f"results with NO keyword match ({len(no_keyword)}), by similarity — these are what tau gates:")
-            for similarity, title in sorted(no_keyword, reverse=True):
+        if weights:
+            unmatched = [(similarities[i], c["title"]) for i, c in enumerate(candidates) if bm25[i] == 0]
+            print(f"results matching NO query term ({len(unmatched)}), by similarity — these are what tau gates:")
+            for similarity, title in sorted(unmatched, reverse=True):
                 print(f"  {similarity:.3f}  {title[:90]}")
 
     if args.record:
@@ -1465,7 +1758,7 @@ async def evaluate(query: str, args: argparse.Namespace) -> None:
 
 async def main() -> None:
     args = parse_args()
-    configure_embeddings(args)
+    configure(args)
     for query in args.queries:
         await evaluate(query, args)
 
@@ -1476,7 +1769,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Lint the script**
 
-Run: `.venv/bin/ruff check scripts/eval_ranking.py`
+Run: `uv tool run ruff@0.8.4 check scripts/eval_ranking.py`
 If it reports `T201` (`print` found), add this under `[tool.ruff.lint.per-file-ignores]` in `pyproject.toml` and re-run:
 
 ```toml
@@ -1487,61 +1780,75 @@ Expected after any fix: no findings.
 
 - [ ] **Step 3: Run the comparison with embeddings**
 
-Run: `.venv/bin/python scripts/eval_ranking.py --rrf-k 5 10 20 30 2>/dev/null | tee /tmp/eval-embeddings.txt`
-Expected: for each query, a table of baseline rank vs hybrid rank per `k`, the floor's kept/removed counts, the similarity percentiles, and the list of no-keyword results by similarity. It takes several minutes (live search, ~30 s per query).
+Run: `.venv/bin/python scripts/eval_ranking.py 2>/dev/null | tee /tmp/eval-embeddings.txt`
+Expected, for each query:
+
+- BM25 term weights with document frequencies;
+- a table of baseline rank vs hybrid rank for k = 10, 20, 30, 40 and 60;
+- the evidence floor's kept and removed counts;
+- similarity percentiles, and the list of results matching no query term, ordered by similarity.
+
+This takes several minutes: live search runs at roughly 30 s per query.
 
 - [ ] **Step 4: Run the comparison without embeddings**
 
-Run: `.venv/bin/python scripts/eval_ranking.py --no-embeddings --rrf-k 10 2>/dev/null | tee /tmp/eval-keyword.txt`
-Expected: same tables with `semantic: not_installed` and no similarity section.
+Run: `.venv/bin/python scripts/eval_ranking.py --no-embeddings --rrf-k 30 2>/dev/null | tee /tmp/eval-bm25.txt`
+Expected: the same tables with `semantic: not_installed` and no similarity section.
 
-- [ ] **Step 5: Choose τ — requires the user's judgment**
+- [ ] **Step 5: Choose τ and confirm k — requires the user's judgment**
 
-This step cannot be pre-filled: τ depends on what real results look like. Read the "results with NO keyword match" lists in `/tmp/eval-embeddings.txt` and, with the user, mark each as relevant or irrelevant to its query. Then:
+This step can't be pre-filled: both values depend on what real results look like. Read `/tmp/eval-embeddings.txt` with the user.
 
-- If some no-keyword results are judged relevant: set τ just below the **lowest** similarity among those relevant ones, provided that is above the **highest** similarity among the irrelevant ones.
-- If the two overlap (a relevant result scores below an irrelevant one), set τ at the lowest relevant similarity and record the overlap in the spec's §4 "Evidence floor" section — the floor will then admit some irrelevant results, which the fused ranking pushes down.
-- If none are judged relevant: set τ at the 75th percentile of the no-keyword similarities.
+**τ:** in the "results matching NO query term" lists, mark each result as relevant or irrelevant to its query. Then:
 
-Also confirm `k=10` with the user from the `k` columns: it should keep exact product-name matches (the first four default queries) at or near the top without letting a single signal's odd pick jump to first place. If another `k` is clearly better on these queries, change `RRF_K` and the `test_rrf_k_is_ten_not_the_textbook_sixty` test together.
+- If some are judged relevant: set τ just below the **lowest** similarity among the relevant ones, provided that is above the **highest** similarity among the irrelevant ones.
+- If the two overlap (a relevant result scores below an irrelevant one): set τ at the lowest relevant similarity, and record the overlap in the spec's §5 "Evidence floor" section. The floor will then admit some irrelevant results, which the fused ranking pushes down.
+- If none are judged relevant: set τ at the 75th percentile of those similarities.
 
-- [ ] **Step 6: Record τ**
+**k:** compare the `k` columns. `k = 30` should keep exact product-name matches (the first four default queries) at or near the top, without letting one signal's odd pick jump to first place. If another `k` is clearly better on these queries, change `RRF_K` in `fusion.py`, and update `test_default_k_is_thirty_for_two_signals` (its name and value) to match.
+
+**Term weights:** check the per-term IDF lines. If an expansion variant still dominates a query despite its half weight, rerun that query with `--expansion-weight 0.25` and compare the orderings with the user before changing `EXPANSION_TERM_WEIGHT`.
+
+- [ ] **Step 6: Record τ (and k, if it changed)**
 
 In `src/mcp_nvidia/lib/fusion.py`, replace:
 
 ```python
-# Semantic similarity below which a candidate with no keyword match is dropped.
+# Semantic similarity below which a candidate matching no query term is dropped.
 # Provisional: replaced with a measured value from scripts/eval_ranking.py before release.
 EVIDENCE_FLOOR_TAU = 0.5
 ```
 
-with (substituting the chosen value and the date measured):
+with the following, substituting the chosen value and the date measured:
 
 ```python
-# Semantic similarity below which a candidate with no keyword match is dropped.
-# Measured with scripts/eval_ranking.py on 8 live queries (YYYY-MM-DD); see Task 5 of
+# Semantic similarity below which a candidate matching no query term is dropped.
+# Measured with scripts/eval_ranking.py on 8 live queries (YYYY-MM-DD); see Task 6 of
 # docs/superpowers/plans/2026-09-12-hybrid-search.md for how it was chosen.
 EVIDENCE_FLOOR_TAU = <chosen value, e.g. 0.62>
 ```
 
-Then re-run `.venv/bin/pytest tests/ -q` — Task 1's floor tests pass `tau` explicitly, so they are unaffected. Expected: `79 passed, 11 skipped`.
+If `k` was confirmed at 30, change `Provisional: confirmed with scripts/eval_ranking.py.` in the `RRF_K` comment to `Confirmed with scripts/eval_ranking.py (YYYY-MM-DD).`
+
+Then re-run `.venv/bin/pytest tests/ -q`. Task 1's floor tests pass `tau` explicitly, so they are unaffected. Expected: `90 passed, 11 skipped`.
 
 - [ ] **Step 7: Record candidates for fixtures**
 
-Run: `.venv/bin/python scripts/eval_ranking.py --rrf-k 10 --record tests/fixtures/ranking 2>/dev/null`
+Run: `.venv/bin/python scripts/eval_ranking.py --rrf-k 30 --record tests/fixtures/ranking 2>/dev/null`
 Expected: one `tests/fixtures/ranking/<slug>.json` per query, each with `"assertions": []`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add scripts/eval_ranking.py src/mcp_nvidia/lib/fusion.py pyproject.toml tests/fixtures/ranking/
+git add scripts/eval_ranking.py src/mcp_nvidia/lib/fusion.py tests/test_fusion.py pyproject.toml tests/fixtures/ranking/
 git commit -F - <<'EOF'
-feat: Add ranking comparison script and set the evidence floor
+feat: Add ranking comparison script and set k and the evidence floor
 
 scripts/eval_ranking.py compares the removed 70/30 blend with hybrid
-ranking on live queries, sweeps k, reports the similarity distribution
-the evidence floor gates, and records candidates for regression
-fixtures. EVIDENCE_FLOOR_TAU is set from its measurements.
+ranking on live queries, prints BM25 term weights, sweeps k, reports the
+similarity distribution the evidence floor gates, and records candidates
+for regression fixtures. EVIDENCE_FLOOR_TAU (and RRF_K) are set from its
+measurements.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013FriD63a2waebg8Qmtscj6
@@ -1550,7 +1857,7 @@ EOF
 
 ---
 
-### Task 6: Labeled ranking regression fixtures
+### Task 7: Labeled ranking regression fixtures
 
 Turns the recorded candidates into deterministic, offline regression tests. The harness is code; the labels are human judgment.
 
@@ -1558,11 +1865,12 @@ Turns the recorded candidates into deterministic, offline regression tests. The 
 
 - Create: `tests/test_ranking_fixtures.py`
 - Modify: `tests/fixtures/ranking/*.json` (add `assertions`)
+- Modify: `.github/workflows/test.yml`
 
 **Interfaces:**
 
-- Consumes: `_rank_candidates` (Task 3); fixtures recorded in Task 5; `embeddings._reset_for_tests` (Task 2).
-- Produces: assertion format — each entry has `"kind"` (`known_item` | `pairwise` | `negative`), `"mode"` (`keyword` | `semantic`) and kind-specific fields:
+- Consumes: `_rank_candidates` (Task 4); fixtures recorded in Task 6; `embeddings._reset_for_tests` (Task 3).
+- Produces: the assertion format. Each entry has a `"kind"` (`known_item` | `pairwise` | `negative`), a `"mode"` (`lexical` | `semantic`), and fields specific to its kind:
   - `known_item`: `"url"`, `"top"` (int)
   - `pairwise`: `"better"`, `"worse"` (URLs)
   - `negative`: `"url"`, `"not_in_top"` (int)
@@ -1575,7 +1883,7 @@ Create `tests/test_ranking_fixtures.py`:
 """Labeled ranking regressions, frozen from real queries by scripts/eval_ranking.py.
 
 Each assertion runs in one mode:
-- "keyword": fastembed is blocked, so ranking uses keyword + TF-IDF only. Always runs.
+- "lexical": fastembed is blocked, so ranking uses BM25 only. Always runs.
 - "semantic": the real model participates. Skips unless the [embeddings] extra is installed.
 
 Admission bar for a new assertion: "I would call it a bug if this regressed."
@@ -1615,12 +1923,17 @@ async def test_ranking_regression(fixture, assertion, monkeypatch):
     if assertion["mode"] == "semantic":
         if not HAS_FASTEMBED:
             pytest.skip("needs mcp-nvidia[embeddings]")
-    elif assertion["mode"] == "keyword":
+    elif assertion["mode"] == "lexical":
         monkeypatch.setitem(sys.modules, "fastembed", None)
     else:
         pytest.fail(f"unknown mode {assertion['mode']!r}")
 
-    ranked = await _rank_candidates(copy.deepcopy(fixture["candidates"]), fixture["expanded_query"], warnings=[])
+    ranked = await _rank_candidates(
+        copy.deepcopy(fixture["candidates"]),
+        fixture["expanded_query"],
+        warnings=[],
+        original_query=fixture["query"],
+    )
     urls = [result["url"] for result in ranked]
 
     kind = assertion["kind"]
@@ -1639,34 +1952,39 @@ async def test_ranking_regression(fixture, assertion, monkeypatch):
 - [ ] **Step 2: Confirm it collects cleanly with no labels yet**
 
 Run: `.venv/bin/pytest tests/test_ranking_fixtures.py -q -rs`
-Expected: `1 skipped` — pytest reports an empty parameter set, because every recorded fixture still has `"assertions": []`.
+Expected: `1 skipped`. Pytest reports an empty parameter set, because every recorded fixture still has `"assertions": []`.
 
 - [ ] **Step 3: Label — requires the user's judgment**
 
-For each recorded fixture, use `/tmp/eval-embeddings.txt` and `/tmp/eval-keyword.txt` from Task 5 — start from the rows where baseline and hybrid disagree most. With the user, add only assertions that pass the admission bar. **Ambiguous cases are not admitted.** Use URLs copied from that fixture's own `candidates`. The format:
+Work through each recorded fixture with the user, using `/tmp/eval-embeddings.txt` and `/tmp/eval-bm25.txt` from Task 6. Start from the rows where baseline and hybrid disagree most.
+
+- Add only assertions that pass the admission bar. **Leave ambiguous cases out.**
+- Copy URLs from that fixture's own `candidates`.
+
+The format:
 
 ```json
 "assertions": [
-  {"kind": "known_item", "mode": "keyword", "url": "<official page URL from candidates>", "top": 3},
+  {"kind": "known_item", "mode": "lexical", "url": "<official page URL from candidates>", "top": 3},
   {"kind": "pairwise", "mode": "semantic", "better": "<URL>", "worse": "<URL>"},
-  {"kind": "negative", "mode": "keyword", "url": "<clearly irrelevant URL>", "not_in_top": 5}
+  {"kind": "negative", "mode": "lexical", "url": "<clearly irrelevant URL>", "not_in_top": 5}
 ]
 ```
 
 Guidance:
 
-- The four known-item queries ("CUDA Toolkit download", "TensorRT documentation", "Nsight Systems profiler", "cuDNN installation guide") should each get a `known_item` assertion for the official page, in **both** modes, if the page was retrieved.
+- The four known-item queries ("CUDA Toolkit download", "TensorRT documentation", "Nsight Systems profiler", "cuDNN installation guide") should each get a `known_item` assertion for the official page, in **both** modes, provided that page was retrieved.
 - Use `mode: "semantic"` only for judgments that depend on meaning rather than shared words.
-- Delete a recorded fixture file that ends up with no assertions.
+- Delete any recorded fixture file that ends up with no assertions.
 
-- [ ] **Step 4: Run the fixtures in both environments**
+- [ ] **Step 4: Run the fixtures**
 
 Run: `.venv/bin/pytest tests/test_ranking_fixtures.py -q`
-Expected: all labeled assertions pass (the extra is installed from Task 4, so both modes run).
+Expected: every labeled assertion passes. The extra is installed from Task 5, so both modes run.
 
-Keyword-mode assertions block fastembed inside the harness, so they already prove ranking works without the model. The base `test` CI job, which has no extra installed, runs them again.
+Lexical-mode assertions block fastembed inside the harness, so they already prove ranking works without the model. The base `test` CI job, which doesn't install the extra, runs them again.
 
-If an assertion fails, do **not** loosen it to pass. Either the label was wrong (re-judge with the user and remove it), or ranking has a real problem (fix `_rank_candidates`, `RRF_K` or τ and re-run Task 5's comparison).
+If an assertion fails, do **not** loosen it to make it pass. Either the label was wrong, in which case re-judge it with the user and remove it; or ranking has a real problem, in which case fix `_rank_candidates`, `RRF_K`, τ or a lexical constant, and re-run Task 6's comparison.
 
 - [ ] **Step 5: Add the fixtures to the CI embeddings job**
 
@@ -1685,7 +2003,7 @@ to:
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/pytest tests/ -q`
-Expected: all pass; the count is `79 + <number of labeled assertions>` passed, `11 skipped`.
+Expected: everything passes, with `90 + <number of labeled assertions>` passed and `11 skipped`.
 
 - [ ] **Step 7: Commit**
 
@@ -1695,7 +2013,7 @@ git commit -F - <<'EOF'
 test: Add labeled ranking regression fixtures
 
 Freezes real candidates recorded by scripts/eval_ranking.py and asserts
-known-item, pairwise and negative judgments in keyword-only and semantic
+known-item, pairwise and negative judgments in BM25-only and semantic
 modes, so a ranking regression fails CI instead of reaching users.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
@@ -1705,7 +2023,7 @@ EOF
 
 ---
 
-### Task 7: Final verification and release notes
+### Task 8: Final verification and release notes
 
 Proves the feature end to end in the real server, brings the docs in line with what was measured, and hands the release decision back to the user.
 
@@ -1717,11 +2035,11 @@ Proves the feature end to end in the real server, brings the docs in line with w
 **Interfaces:**
 
 - Consumes: everything above.
-- Produces: verified branch state and an updated PR #8 description. No code interfaces.
+- Produces: a verified branch and an updated PR #8 description. No code interfaces.
 
 - [ ] **Step 1: Full suite and lint**
 
-Run: `.venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/ && .venv/bin/pytest tests/ -q`
+Run: `uv tool run ruff@0.8.4 check src/ tests/ scripts/ && uv tool run ruff@0.8.4 format --check src/ tests/ scripts/ && .venv/bin/pytest tests/ -q`
 Expected: no findings; all tests pass.
 
 - [ ] **Step 2: Live stdio smoke test through a real MCP client**
@@ -1730,7 +2048,7 @@ Run:
 
 ```bash
 .venv/bin/python - <<'PY'
-import asyncio, json
+import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -1749,7 +2067,12 @@ asyncio.run(main())
 PY
 ```
 
-Expected: `isError: False`, a non-empty result list with scores descending from 100, and **no** `SEMANTIC_RANKING_UNAVAILABLE` warning (the extra is installed). The official CUDA downloads page should be at or near the top.
+Expected:
+
+- `isError: False`.
+- A non-empty result list, with scores descending from 100.
+- **No** `SEMANTIC_RANKING_UNAVAILABLE` warning, since the extra is installed.
+- The official CUDA downloads page at or near the top.
 
 - [ ] **Step 3: Live HTTP smoke test**
 
@@ -1767,7 +2090,7 @@ Expected: `{"status":"healthy",...,"version":"0.9.0",...}`.
 
 - [ ] **Step 4: Container smoke test (if Docker is available)**
 
-If Task 4 Step 6 found Docker available, run:
+If Task 5 Step 6 found Docker available, run:
 
 ```bash
 docker build -t mcp-nvidia:hybrid .
@@ -1782,8 +2105,8 @@ Expected: healthy. No weight download appears in the logs at any point, because 
 
 - [ ] **Step 5: Bring the docs in line with what shipped**
 
-- Read the 0.9.0 entry in `CHANGELOG.md`. It already describes hybrid search, the ranking change, the evidence floor, the dedupe move and the warning. If Task 5 changed `RRF_K`, or anything shipped differently, correct the entry to match.
-- In the spec, change the status line from `Approved 2026-09-12; both open questions resolved (§11)` to `Implemented YYYY-MM-DD (τ = <value>, k = <value>)`.
+- Read the 0.9.0 entry in `CHANGELOG.md`. It already describes BM25, the ranking change, the evidence floor, the dedupe move, the dropped fuzzy, phrase and URL matching, and the new warning. If Task 6 changed `RRF_K` or a lexical constant, or anything else shipped differently, correct the entry to match.
+- In the spec, change the status line to `Implemented YYYY-MM-DD (τ = <value>, k = <value>)`.
 
 Then run: `pre-commit run --files CHANGELOG.md docs/superpowers/specs/2026-09-12-hybrid-search-design.md`
 Expected: all hooks pass.
@@ -1803,9 +2126,14 @@ git push origin chore/pin-mcp-v1
 
 - [ ] **Step 7: Update PR #8's description**
 
-Change section 3's heading from "design done, implementation in progress 🚧" to "✅", replace the "Tests for hybrid search land with its implementation" line with the final test counts from Step 1, add the chosen τ and k, and remove the "Draft on purpose" callout's "implementation is in progress" wording.
+Make these changes:
 
-`gh pr edit` fails on this repository with a GraphQL `projectCards` error (seen 2026-09-12), so write the full body to a file and use the REST API:
+- Change section 3's heading from "design done, implementation in progress 🚧" to "✅".
+- Replace the "Tests for hybrid search land with its implementation" line with the final test counts from Step 1.
+- Add the chosen τ and k.
+- Remove "implementation is in progress" from the "Draft on purpose" callout.
+
+`gh pr edit` fails on this repository with a GraphQL `projectCards` error (seen 2026-09-12). Write the full body to a file and use the REST API instead:
 
 ```bash
 gh api --method PATCH repos/bharatr21/mcp-nvidia/pulls/8 -F body=@/tmp/pr8-body.md --jq '{number, draft}'
@@ -1821,7 +2149,7 @@ https://claude.ai/code/session_013FriD63a2waebg8Qmtscj6
 
 - [ ] **Step 8: Stop — the release decision is the user's**
 
-Report to the user: final test counts, the τ and k chosen, the smoke-test results, and that PR #8 is still a draft. **Do not undraft or merge it.** Merging deploys production on Railway, and live clients are still connected over `/sse`.
+Report to the user: the final test counts, the τ and k chosen, the smoke-test results, and that PR #8 is still a draft. **Do not undraft or merge it.** Merging deploys production on Railway, and live clients are still connected over `/sse`.
 
 ---
 
@@ -1829,20 +2157,21 @@ Report to the user: final test counts, the τ and k chosen, the smoke-test resul
 
 **Spec coverage** (spec section → task):
 
-- §3 decisions 1–2 (RRF, k=10) → Task 1; revisited against data in Task 5.
-- §3 decision 3, §4 score formula → Task 1 (`relevance_from_position`), Task 3 (applied, schema descriptions).
-- §3 decisions 4–5, §5 packaging (fastembed extra, bge-small) → Task 4; model default in Task 2.
-- §3 decision 6, §5 input text → Task 2 (`build_document_text`).
-- §3 decision 7, §5 loading and encoding (lazy, once, lock, worker thread, timeout, `query_embed` vs `embed`) → Task 2.
-- §3 decision 8, §5 weights (Docker prefetch, lazy pip download) → Task 4.
-- §3 decisions 9 and 13, §6 failure table and warning shape → Task 2 (reasons), Task 3 (warning only for installed-but-failing).
-- §3 decision 10, §7 dedupe moved ahead of scoring → Task 3.
-- §3 decision 11, §8 stage 1 script → Task 5; stage 2 fixtures → Task 6.
-- §3 decision 12, §4 evidence floor including keywordless queries → Task 1 (function), Task 3 (applied), Task 5 (τ measured).
-- §8 unit and protocol tests → Tasks 1, 2, 3; network seam → Task 3.
-- §9 public surface (ordering, scores, cutoff, extra, env vars, warning) → Tasks 3 and 4; CHANGELOG checked in Task 7.
-- §10 risks (deploy on merge, unmeasured production latency, Python 3.10 onnxruntime) → Task 4 CI matrix, Task 7 smoke tests and stop-before-merge.
+- §3 decisions 1–6 and §4 (BM25 replacing the keyword heuristic and TF-IDF; Lucene IDF; stemming; title weight; domain boost; expansion weight) → Task 2 (functions), Task 4 (applied, with the original query kept), Task 6 (per-term IDF inspected; weights tunable).
+- §3 decisions 7–8 and §5 fusion (RRF, provisional `k = 30`, the two-signal crossover) → Task 1; confirmed against data in Task 6.
+- §3 decision 9 and §5 score formula → Task 1 (`relevance_from_position`), Task 4 (applied, plus the schema descriptions).
+- §3 decisions 10–11 and §6 packaging (fastembed extra, bge-small) → Task 5; the model default is in Task 3.
+- §3 decision 12 and §6 input text → Task 3 (`build_document_text`); embedding the original query → Task 4.
+- §3 decision 13 and §6 loading and encoding (lazy, once, under a lock, worker thread, timeout, `query_embed` vs `embed`) → Task 3.
+- §3 decision 14 and §6 weights (Docker prefetch, lazy pip download) → Task 5.
+- §3 decision 15 and §7 failure table and warning shape → Task 3 (reasons), Task 4 (warning only when installed but failing; BM25 message).
+- §3 decision 16 and §9 dedupe moved ahead of scoring → Task 4.
+- §3 decision 17 and §5 evidence floor, including queries with no terms → Task 1 (function), Task 4 (applied), Task 6 (τ measured).
+- §3 decision 18 and §10 stage 1 script → Task 6; stage 2 fixtures in lexical and semantic modes → Task 7.
+- §10 unit and protocol tests → Tasks 1–4; network seam → Task 4.
+- §8 public surface (ordering, scores, cutoff, dropped fuzzy/phrase/URL matching, extra, env vars, warning) → Tasks 4 and 5; CHANGELOG checked in Task 8.
+- §11 risks (deploy on merge, unmeasured production latency, lost typo tolerance, noisy IDF, Python 3.10 onnxruntime) → Task 5 CI matrix, Task 6 measurements, Task 7 fixtures, Task 8 smoke tests and the stop before merging.
 
-**Deviations from the spec, both additive:** `SemanticRanking` gains `similarities` (the evidence floor compares values, not order; the spec has been updated to match). `_rank_candidates` accepts `rrf_k` and `tau` parameters so Task 5 can sweep them without editing constants.
+**Deviations from the spec:** none remaining. `SemanticRanking.similarities` and embedding the original query are both written into the spec. `_rank_candidates` takes `original_query`, `rrf_k` and `tau` as keyword arguments so Tasks 6 and 7 can drive it directly; `search_all_domains`'s signature is unchanged.
 
-**Human-judgment steps:** Task 5 Step 5 (choosing τ, confirming k) and Task 6 Step 3 (labels). Both are inherent to the design — the spec requires τ to come from measurement and labels from judging real disagreements — and each gives an explicit decision rule and a format rather than a guess.
+**Human-judgment steps:** Task 6 Step 5 (τ, k, expansion weight) and Task 7 Step 3 (labels). Both are inherent to the design: the spec requires τ and k to come from measurement and labels from judging real disagreements. Each step gives an explicit decision rule and a format rather than a guess.

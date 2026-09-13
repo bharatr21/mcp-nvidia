@@ -15,9 +15,9 @@ breaking 1.0.0 release that follows.
 
 ### Added
 
-- **Hybrid search.** `search_nvidia` can rank results by semantic similarity alongside
-  keyword matching and TF-IDF, using a small local embedding model
-  (`BAAI/bge-small-en-v1.5` via fastembed; no torch and no API key). It is opt-in:
+- **Hybrid search.** `search_nvidia` ranks results with BM25 and, optionally, by semantic
+  similarity using a small local embedding model (`BAAI/bge-small-en-v1.5` via fastembed;
+  no torch and no API key). Semantic ranking is opt-in:
   `pip install "mcp-nvidia[embeddings]"`. The model downloads on first use, and the
   Docker image ships with it preinstalled.
 - Configuration through `MCP_NVIDIA_EMBEDDING_MODEL` and `MCP_NVIDIA_EMBEDDING_THREADS`.
@@ -27,13 +27,16 @@ breaking 1.0.0 release that follows.
 ### Changed
 
 - **Result order changes for every `search_nvidia` query**, with or without the extra.
-  The fixed 70% keyword / 30% TF-IDF score blend is replaced by reciprocal rank fusion
-  over the available ranking signals.
+  The keyword heuristic and TF-IDF, previously combined in a fixed 70/30 blend, are
+  replaced by a single BM25 score (stemmed, with titles weighted above snippets), fused
+  with semantic similarity by reciprocal rank fusion when the extra is installed.
+- Typo-tolerant fuzzy matching, the phrase bonus and URL term matching no longer affect
+  search ranking. `discover_nvidia_content` is unchanged.
 - `relevance_score` is still an integer from 0 to 100, but it is now derived from a
   result's position in the fused ranking rather than from a weighted score.
-- Candidates with no keyword match and low semantic similarity are dropped before
-  ranking, and `min_relevance_score` then applies to the fused ranking. Queries with
-  only weak matches can return fewer results.
+- Candidates that match no query term and have low semantic similarity are dropped
+  before ranking, and `min_relevance_score` then applies to the fused ranking. Queries
+  with only weak matches can return fewer results.
 - Duplicate results are removed before ranking instead of after the relevance cutoff, so a
   page returned by two overlapping domains (for example `ngc.nvidia.com` and
   `catalog.ngc.nvidia.com`) is no longer scored twice.
