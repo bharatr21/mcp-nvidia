@@ -64,9 +64,10 @@ async def test_bm25_alone_ranks_the_stronger_match_first():
 
     embeddings._reset_for_tests(loader=not_installed_loader)
 
-    results, *_ = await _search()
+    results, _errors, warnings, _timing = await _search()
 
     assert results[0]["url"] == MEMORY_GUIDE_URL
+    assert all(w["code"] != search.SEMANTIC_UNAVAILABLE_WARNING for w in warnings)
 
 
 async def test_semantic_ranking_embeds_the_original_query(monkeypatch):
