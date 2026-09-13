@@ -54,6 +54,9 @@ Documentation = "https://github.com/bharatr21/mcp-nvidia#readme"
 ui = [
     "mcp-ui-server>=0.1.0",  # For MCP-UI integration with interactive HTML components
 ]
+embeddings = [
+    "fastembed>=0.8,<0.9",  # Local ONNX embedding model for hybrid search (no torch)
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
