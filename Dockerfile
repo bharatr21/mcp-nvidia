@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir .
+# Hybrid search: install the embeddings extra and bake the model weights into the image,
+# so containers never download them on a cold start.
+ENV FASTEMBED_CACHE_PATH=/opt/models
+RUN pip install --no-cache-dir ".[embeddings]"
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
 
 EXPOSE 8080
 

@@ -97,7 +97,11 @@ def _get_tool_schemas() -> list[dict[str, Any]]:
                     },
                     "min_relevance_score": {
                         "type": "integer",
-                        "description": "Minimum relevance score threshold (0-100) to filter results (default: 17)",
+                        "description": (
+                            "Minimum relevance score (0-100). Scores come from each result's position in the fused "
+                            "ranking, after results matching no query term and with low semantic similarity are "
+                            "removed (default: 17)"
+                        ),
                         "default": 17,
                         "minimum": 0,
                         "maximum": 100,
@@ -217,7 +221,10 @@ def _get_tool_schemas() -> list[dict[str, Any]]:
                                 },
                                 "relevance_score": {
                                     "type": "integer",
-                                    "description": "Relevance score from 0-100 based on keyword matching and TF-IDF",
+                                    "description": (
+                                        "Relevance score from 0-100, derived from the result's position after fusing "
+                                        "BM25 and (when installed) semantic rankings; 100 is the top result"
+                                    ),
                                 },
                                 "matched_keywords": {
                                     "type": "array",
@@ -623,8 +630,15 @@ async def list_resources() -> list[Resource]:
 
 
 @app.read_resource()
-async def read_resource(uri: str) -> str:
-    """Read SDK resource by URI."""
+async def read_resource(uri) -> str:
+    """Read SDK resource by URI.
+
+    The SDK hands this handler ``params.uri`` as a pydantic ``AnyUrl``, not a ``str``
+    (see ``Callable[[AnyUrl], ...]`` on the SDK's ``read_resource`` decorator), so it
+    is coerced before any string operation. Calling ``.startswith()`` on an ``AnyUrl``
+    raises ``AttributeError``, which reaches clients as an opaque JSON-RPC error.
+    """
+    uri = str(uri)
     logger.info(f"Reading resource: {uri}")
 
     if not uri.startswith("mcp-nvidia://sdk/"):

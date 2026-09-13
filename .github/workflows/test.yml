@@ -50,3 +50,34 @@ jobs:
         source .venv/bin/activate
         uv pip install build
         python -m build
+
+  embeddings:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.10 is where fastembed pins onnxruntime below 1.24; 3.12 matches the Docker image.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      run: pip install uv
+
+    - name: Create virtual environment
+      run: uv venv
+
+    - name: Install dependencies with the embeddings extra
+      run: |
+        source .venv/bin/activate
+        uv pip install -e ".[test,embeddings]"
+
+    - name: Run ranking tests with the real model
+      run: |
+        source .venv/bin/activate
+        pytest tests/test_embeddings_model.py tests/test_search_pipeline.py tests/test_embeddings.py -v --tb=short

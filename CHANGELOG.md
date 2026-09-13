@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-12
+
+This release pins the MCP SDK so existing installs keep working, adds hybrid keyword +
+semantic ranking to `search_nvidia`, fixes `resources/read`, and gives notice of the
+breaking 1.0.0 release that follows.
+
+### Added
+
+- **Hybrid search.** `search_nvidia` ranks results with BM25 and, optionally, by semantic
+  similarity using a small local embedding model (`BAAI/bge-small-en-v1.5` via fastembed;
+  no torch and no API key). Semantic ranking is opt-in:
+  `pip install "mcp-nvidia[embeddings]"`. The model downloads on first use, and the
+  Docker image ships with it preinstalled.
+- Configuration through `MCP_NVIDIA_EMBEDDING_MODEL` and `MCP_NVIDIA_EMBEDDING_THREADS`.
+- A `SEMANTIC_RANKING_UNAVAILABLE` entry in `warnings` when semantic ranking is installed
+  but fails, so degraded ranking is visible in the response.
+
+### Changed
+
+- **Result order changes for every `search_nvidia` query**, with or without the extra.
+  The keyword heuristic and TF-IDF, previously combined in a fixed 70/30 blend, are
+  replaced by a single BM25 score (stemmed, with titles weighted above snippets), fused
+  with semantic similarity by reciprocal rank fusion when the extra is installed.
+- Typo-tolerant fuzzy matching, the phrase bonus and URL term matching no longer affect
+  search ranking. `discover_nvidia_content` is unchanged.
+- `relevance_score` is still an integer from 0 to 100, but it is now derived from a
+  result's position in the fused ranking rather than from a weighted score.
+- Candidates that match no query term and have low semantic similarity are dropped
+  before ranking, and `min_relevance_score` then applies to the fused ranking. Queries
+  with only weak matches can return fewer results.
+- Duplicate results are removed before ranking instead of after the relevance cutoff, so a
+  page returned by two overlapping domains (for example `ngc.nvidia.com` and
+  `catalog.ngc.nvidia.com`) is no longer scored twice.
+
+### Fixed
+
+- Pinned the MCP SDK to `mcp>=1.28,<2.0.0`. The previous requirement, `mcp>=1.1.0`, has
+  no upper bound, so a fresh `pip install mcp-nvidia` now resolves to `mcp` 2.2.0 — an
+  SDK that removed the decorator handler API this release is built on. Installs that
+  picked up `mcp` 2.x would fail at import. Verified against `mcp` 1.30.0, the latest 1.x.
+- `resources/read` failed for every MCP client with
+  `'AnyUrl' object has no attribute 'startswith'`. The SDK passes the resource URI as a
+  pydantic `AnyUrl` rather than a string. This affected every supported `mcp` 1.x version,
+  and 0.5.0 before it.
+
+### ⚠️ Notice: 1.0.0 will be a breaking release
+
+**mcp-nvidia 1.0.0 is not backward compatible with 0.x.** It requires the `mcp` 2.x SDK
+(`mcp>=2.2.0,<3`) and the `2026-07-28` protocol revision. If you upgrade, expect all of
+the following to change:
+
+- **The remote transport moves.** The SSE endpoint `/sse` is removed and returns
+  `410 Gone`. Remote clients must point at `/mcp` and use `"transport": "http"` instead
+  of `"transport": "sse"`.
+- **The SDK requirement flips.** 1.0.0 requires `mcp>=2.2.0` and will not run on `mcp` 1.x,
+  just as 0.9.0 will not run on `mcp` 2.x. The two cannot be installed together.
+- **An error code changes.** An invalid or unknown resource URI returns `-32602`
+  (Invalid Params) instead of `-32002`.
+- **Remote deployments need a host allow-list.** The server enables DNS-rebinding
+  protection; a public deployment must advertise its hostname via `RAILWAY_PUBLIC_DOMAIN`
+  (automatic on Railway) or `MCP_ALLOWED_HOSTS`, or requests are rejected with `421`.
+
+Clients on the 2025-era protocol are still served by 1.0.0 over the same `/mcp` endpoint,
+so upgrading the server does not force every client to upgrade at once.
+
+**To stay on the 0.x line**, pin the package rather than the SDK:
+
+```bash
+pip install "mcp-nvidia<1.0.0"
+```
+
 ## [0.4.0] - 2025-11-16
 
 ### Added

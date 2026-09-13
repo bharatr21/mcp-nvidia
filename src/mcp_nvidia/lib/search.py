@@ -17,12 +17,17 @@ from mcp_nvidia.lib.constants import (
     validate_nvidia_domain,
 )
 from mcp_nvidia.lib.deduplication import deduplicate_results
-from mcp_nvidia.lib.relevance import (
-    calculate_search_relevance,
-    calculate_tfidf_scores,
-    expand_query_with_product_variants,
-    get_domain_boost,
+from mcp_nvidia.lib.embeddings import ENCODE_FAILED, MODEL_LOAD_FAILED, semantic_rank
+from mcp_nvidia.lib.fusion import (
+    EVIDENCE_FLOOR_TAU,
+    RRF_K,
+    apply_evidence_floor,
+    rank_by_score,
+    reciprocal_rank_fusion,
+    relevance_from_position,
 )
+from mcp_nvidia.lib.lexical import bm25_scores, document_tokens, query_term_weights
+from mcp_nvidia.lib.relevance import expand_query_with_product_variants, get_domain_boost
 from mcp_nvidia.lib.snippet import fetch_url_context
 from mcp_nvidia.lib.utils import detect_content_type, extract_date_from_text, get_domain_category, is_ad_url
 
@@ -208,6 +213,77 @@ async def _search_domain_with_semaphore(
         return await search_nvidia_domain(client, domain, query, max_results)
 
 
+SEMANTIC_UNAVAILABLE_WARNING = "SEMANTIC_RANKING_UNAVAILABLE"
+
+
+async def _rank_candidates(
+    candidates: list[dict[str, Any]],
+    query: str,
+    warnings: list[dict[str, Any]],
+    *,
+    original_query: str | None = None,
+    rrf_k: int = RRF_K,
+    tau: float = EVIDENCE_FLOOR_TAU,
+) -> list[dict[str, Any]]:
+    """Score, gate and fuse candidates; return survivors best-first with relevance_score set.
+
+    `query` is the expanded query and `original_query` the user's own (defaulting to
+    `query`). BM25 always ranks. Semantic similarity to the original query ranks too
+    when the [embeddings] extra is installed and working; when it is installed but
+    fails, a warning is appended so degraded ranking is visible in the response.
+    """
+    if not candidates:
+        return []
+
+    user_query = original_query if original_query is not None else query
+    query_weights = query_term_weights(user_query, query)
+    bm25 = bm25_scores([document_tokens(result) for result in candidates], query_weights)
+    domain_boosts = [get_domain_boost(result.get("domain", ""), query) for result in candidates]
+    lexical_scores = [score * boost for score, boost in zip(bm25, domain_boosts, strict=True)]
+
+    semantic = await semantic_rank(user_query, candidates)
+    if semantic.unavailable in (MODEL_LOAD_FAILED, ENCODE_FAILED):
+        warnings.append(
+            {
+                "code": SEMANTIC_UNAVAILABLE_WARNING,
+                "message": "Semantic ranking unavailable; results ranked by BM25 only",
+                "reason": semantic.unavailable,
+            }
+        )
+
+    survivors = apply_evidence_floor(
+        lexical_scores,
+        semantic.similarities,
+        tau=tau,
+        query_has_terms=bool(query_weights),
+    )
+    if not survivors:
+        return []
+
+    rankings = [rank_by_score([lexical_scores[i] for i in survivors])]
+    if semantic.similarities is not None:
+        rankings.append(rank_by_score([semantic.similarities[i] for i in survivors]))
+
+    ranked = []
+    for position, local_index in enumerate(reciprocal_rank_fusion(rankings, k=rrf_k)):
+        index = survivors[local_index]
+        result = candidates[index]
+        result["relevance_score"] = relevance_from_position(position, len(survivors))
+        if logger.isEnabledFor(logging.DEBUG):
+            result["_debug_scores"] = {
+                "bm25": round(bm25[index], 4),
+                "domain_boost": domain_boosts[index],
+                "lexical_score": round(lexical_scores[index], 4),
+                "semantic_similarity": (
+                    None if semantic.similarities is None else round(semantic.similarities[index], 4)
+                ),
+                "fused_position": position,
+                "signals": len(rankings),
+            }
+        ranked.append(result)
+    return ranked
+
+
 async def search_all_domains(
     query: str,
     domains: list[str] | None = None,
@@ -273,6 +349,10 @@ async def search_all_domains(
         ]
         logger.info(f"Domain filtering: {len(domains)} domains after applying blocked_domains filter")
 
+    # Keep the user's own query: BM25 weighs expansion-only terms lower, and semantic
+    # ranking embeds the original query without expansion variants.
+    original_query = query
+
     # Expand query with product variants for better matching
     expanded_query = expand_query_with_product_variants(query)
     if expanded_query != query:
@@ -324,49 +404,18 @@ async def search_all_domains(
 
     total_time_ms = int((time.time() - start_time) * 1000)
 
-    # Calculate TF-IDF scores for all results
-    logger.debug("Calculating TF-IDF scores...")
-    tfidf_scores = calculate_tfidf_scores(all_results, query)
+    # Remove duplicates before scoring, so a page returned by two overlapping domains is
+    # scored once and occupies one position in the fused ranking.
+    all_results = deduplicate_results(all_results)
 
-    # Calculate relevance scores with domain boosts and TF-IDF
-    for i, result in enumerate(all_results):
-        # Error results get a score of 0 to prevent query text in error message from inflating scores
-        if result.get("is_error", False):
-            result["relevance_score"] = 0
-            if logger.isEnabledFor(logging.DEBUG):
-                result["_debug_scores"] = {
-                    "keyword_score": 0,
-                    "tfidf_score": 0,
-                    "domain_boost": 0,
-                    "combined_score": 0,
-                    "reason": "error_result",
-                }
-            continue
+    # Error results are never ranked. They score 0 so the query text inside an error
+    # message cannot inflate them.
+    error_results = [result for result in all_results if result.get("is_error", False)]
+    for result in error_results:
+        result["relevance_score"] = 0
+    candidates = [result for result in all_results if not result.get("is_error", False)]
 
-        domain = result.get("domain", "")
-
-        # Get domain-specific boost
-        domain_boost = get_domain_boost(domain, query)
-
-        # Calculate keyword-based score with fuzzy matching and phrase matching
-        keyword_score = calculate_search_relevance(result, query, domain_boost)
-
-        # Get TF-IDF score
-        tfidf_score = tfidf_scores[i] if i < len(tfidf_scores) else 0.5
-
-        # Combine scores: 70% keyword-based + 30% TF-IDF
-        combined_score = int(keyword_score * 0.7 + tfidf_score * 100 * 0.3)
-
-        result["relevance_score"] = min(combined_score, 100)
-
-        # Store component scores for debugging
-        if logger.isEnabledFor(logging.DEBUG):
-            result["_debug_scores"] = {
-                "keyword_score": keyword_score,
-                "tfidf_score": int(tfidf_score * 100),
-                "domain_boost": domain_boost,
-                "combined_score": combined_score,
-            }
+    all_results = await _rank_candidates(candidates, query, warnings, original_query=original_query) + error_results
 
     # Add content type detection to each result
     for result in all_results:
@@ -384,9 +433,6 @@ async def search_all_domains(
 
     # Filter by minimum relevance score
     filtered_results = [r for r in all_results if r.get("relevance_score", 0) >= min_relevance_score]
-
-    # Deduplicate results (v0.3.0 feature)
-    filtered_results = deduplicate_results(filtered_results)
 
     # Apply date filtering if specified
     if date_from or date_to:
