@@ -2,6 +2,8 @@
 
 MCP server to search across NVIDIA blogs and releases to empower LLMs to better answer NVIDIA-specific queries.
 
+[![NVIDIA MCP server](https://mcprush.com/badge/nvidia-mcp/card.svg?theme=light)](https://mcprush.com/to/nvidia-mcp?ref=badge)
+
 ## Overview
 
 This Model Context Protocol (MCP) server enables Large Language Models (LLMs) to search across
